@@ -66,8 +66,45 @@ Reprocessamento de toda a base: 23 incidentes.
 - **Geração zerada na TOA:** de 2026-06-22 a 2026-07-31, sem interrupção.
 - **`under_expected`:** os alertas costumam surgir em TOB e TOC nos mesmos dias, o que sugere diferença entre o clima da estação e o da planta, e não falha de equipamento. Um alerta é um indício para análise, não um diagnóstico.
 
+## Plantas reais da Growatt
+
+Cinco plantas com um inversor cada, identificadas por letras para não expor os clientes. Clima do Open-Meteo nas coordenadas de cada planta. Validação temporal com janela expansível, só em leituras válidas.
+
+| Planta | Tipo | Pontos | Modelo ativo | MAE (kWh) | R² | MAE de repetir o dia anterior |
+|---|---|---|---|---|---|---|
+| A | MIN | 34 | Ridge | 0,84 | 0,11 | 0,87 |
+| B | MAX | 93 | Calibrado | 21,66 | 0,51 | 40,12 |
+| C | MAX | 226 | Calibrado | 30,05 | 0,47 | 38,85 |
+| D | MAX | 178 | Ridge | 24,00 | 0,33 | 35,06 |
+| E | MIN | 34 | Nenhum | 4,95 (ridge) | -0,09 | 4,61 |
+
+O desempenho é bem menor que na planilha (R² de 0,85). Causas prováveis, ainda não testadas: clima de grade em vez de estação local, potência do inversor limitando os dias de sol e pouca variação diária no período avaliado. Na planta E, nenhum modelo superou a referência, e o sistema não ativou nenhum.
+
+Os inversores MIN só têm os últimos 95 dias de histórico na API, por isso têm tão poucos pontos.
+
+A divisão 80/20 avalia só o trecho final, e nela o resultado é mais fraco. O melhor entre os modelos climáticos foi sempre o ridge:
+
+| Planta | Pontos | MAE ridge (kWh) | R² ridge | MAE de repetir o dia anterior |
+|---|---|---|---|---|
+| A | 19 | 1,11 | -1,79 | 0,88 |
+| B | 31 | 16,59 | 0,17 | 30,72 |
+| C | 58 | 30,07 | -2,25 | 11,55 |
+| D | 48 | 24,50 | -0,39 | 20,13 |
+| E | 19 | 3,15 | -7,72 | 1,59 |
+
+Nesse trecho, repetir o dia anterior teve MAE menor que o ridge em 4 das 5 plantas. Portanto, nas plantas reais, o modelo ainda não demonstrou ganho estável. Com tão poucos meses, um resultado de um único período é frágil, mas não dá para afirmar que o modelo generaliza bem para elas. Nas regras de alerta, o valor esperado dessas plantas deve ser tratado com cautela. As regras que mais valem nelas são as que não dependem do modelo: travamento, geração zerada e falta de comunicação.
+
+### Falhas encontradas nos dados reais
+
+- **Planta B:** leitura travada por 23 dias, de 10/05 a 01/06, depois geração zerada desde 26/06 e sem comunicação desde 25/06.
+- **Planta D:** geração zerada desde 27/08 e sem comunicação desde 07/09.
+- **Planta C:** duas paradas, de 5 e 15 dias, com retorno posterior.
+- **Planta E:** sem comunicação desde 03/11.
+
+Na planilha e na planta B, o travamento da leitura veio antes da parada total. Dois casos não bastam para afirmar que uma coisa antecipa a outra, mas vale investigar com mais plantas.
+
 ## Limites
 
-- Só uma planta foi avaliada, com cerca de 10 meses de dados. Falta um ciclo anual completo.
-- O conector Growatt foi testado no servidor de testes da Growatt, que não tem inversores. A produção ainda depende de um token com permissão.
+- Há no máximo cerca de 10 meses de dados por planta. Falta um ciclo anual completo.
+- Nas plantas Growatt, cada planta tem um único inversor, então as regras que comparam dispositivos não se aplicam a elas.
 - `gradual_loss` compara cada dispositivo com os demais, portanto não detecta uma perda igual em todos, como sujeira uniforme.

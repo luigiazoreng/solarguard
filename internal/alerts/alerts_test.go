@@ -1449,3 +1449,22 @@ func TestDeviceOfflineFiresAndResolvesWhenBackOnline(t *testing.T) {
 		t.Fatalf("alert = %+v err=%v", got, err)
 	}
 }
+
+func TestPlantNoGenerationNeedsMoreThanOneDevice(t *testing.T) {
+	st, ctx := setupTestDB(t)
+	tz := "America/Sao_Paulo"
+	plant, devs := createTestPlant(t, ctx, st, "Plant-One", tz, "D1")
+	insertDailyReadings(t, ctx, st, devs[0].ID, tz,
+		[]string{"2026-03-01", "2026-03-02", "2026-03-03", "2026-03-04"},
+		[]float64{0, 0, 0, 0}, []string{"0", "0", "0", "0"})
+	if _, err := quality.Classify(ctx, st, plant.ID, time.Time{}, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	sum, err := alerts.Run(ctx, st, plant.ID, alerts.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.CountsByRule["zero_generation"] != 1 || sum.CountsByRule["plant_no_generation"] != 0 {
+		t.Fatalf("a single device must report only zero_generation: %+v", sum.CountsByRule)
+	}
+}
