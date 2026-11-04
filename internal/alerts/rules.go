@@ -755,20 +755,20 @@ func evaluateUnderExpected(plantID int64, dev domain.Device, items []readingItem
 	return incidents
 }
 
-func evaluateGradualLoss(plantID int64, dev domain.Device, items []readingItem, preds map[string]float64, cfgParams map[string]any) []incident {
+// gradualDay is one ok day with its loss against the device's own recent baseline.
+type gradualDay struct {
+	Date     string
+	Value    float64
+	Expected float64
+	Drop     float64
+}
+
+// gradualDrops computes, per ok day, how much the median of value/expected over
+// the last window fell against the median of the baseline before that window.
+func gradualDrops(items []readingItem, preds map[string]float64, cfgParams map[string]any) []gradualDay {
 	window := getParamInt(cfgParams, "window", 14)
 	baseline := getParamInt(cfgParams, "baseline", 60)
 	minBaselineDays := getParamInt(cfgParams, "min_baseline_days", 30)
-	drop := getParamFloat(cfgParams, "drop", 0.10)
-	resolveAfterDays := getParamInt(cfgParams, "resolve_after_days", 3)
-
-	effectiveParams := map[string]any{
-		"window":             window,
-		"baseline":           baseline,
-		"min_baseline_days":  minBaselineDays,
-		"drop":               drop,
-		"resolve_after_days": resolveAfterDays,
-	}
 
 	type okDay struct {
 		Date     string
@@ -776,55 +776,77 @@ func evaluateGradualLoss(plantID int64, dev domain.Device, items []readingItem, 
 		Expected float64
 		Ratio    float64
 	}
-
 	var okDays []okDay
 	for _, it := range items {
-		if it.Reading.Quality == domain.QualityOK && it.Reading.Value != nil {
-			if expected, ok := preds[it.Date]; ok && expected > 0 {
-				okDays = append(okDays, okDay{
-					Date:     it.Date,
-					Value:    *it.Reading.Value,
-					Expected: expected,
-					Ratio:    *it.Reading.Value / expected,
-				})
-			}
+		if it.Reading.Quality != domain.QualityOK || it.Reading.Value == nil {
+			continue
+		}
+		if expected, ok := preds[it.Date]; ok && expected > 0 {
+			okDays = append(okDays, okDay{it.Date, *it.Reading.Value, expected, *it.Reading.Value / expected})
 		}
 	}
 
-	var incidents []incident
-	var current []okDay
+	var out []gradualDay
+	for i := window - 1; i < len(okDays); i++ {
+		baseEnd := i - window + 1
+		baseStart := max(baseEnd-baseline, 0)
+		if baseEnd-baseStart < minBaselineDays {
+			continue
+		}
+		var winRatios, baseRatios []float64
+		for k := baseEnd; k <= i; k++ {
+			winRatios = append(winRatios, okDays[k].Ratio)
+		}
+		for k := baseStart; k < baseEnd; k++ {
+			baseRatios = append(baseRatios, okDays[k].Ratio)
+		}
+		d := okDays[i]
+		out = append(out, gradualDay{d.Date, d.Value, d.Expected, median(baseRatios) - median(winRatios)})
+	}
+	return out
+}
 
+// evaluateGradualLoss flags a device losing generation compared with its peers.
+// A drop shared by the whole plant comes from the season or the model, not from
+// that device, so each device is measured against its peers' drop on the same
+// day. With no peer data the drop is used as is. As a result, a loss that hits
+// every device equally, such as uniform soiling, is not detected by this rule.
+func evaluateGradualLoss(plantID int64, dev domain.Device, days []gradualDay, peers []map[string]float64, cfgParams map[string]any) []incident {
+	drop := getParamFloat(cfgParams, "drop", 0.10)
+	minDays := getParamInt(cfgParams, "min_days", 7)
+	maxGapDays := getParamInt(cfgParams, "max_gap_days", 3)
+	effectiveParams := map[string]any{
+		"window":             getParamInt(cfgParams, "window", 14),
+		"baseline":           getParamInt(cfgParams, "baseline", 60),
+		"min_baseline_days":  getParamInt(cfgParams, "min_baseline_days", 30),
+		"drop":               drop,
+		"min_days":           minDays,
+		"max_gap_days":       maxGapDays,
+		"resolve_after_days": getParamInt(cfgParams, "resolve_after_days", 3),
+	}
+
+	var incidents []incident
+	var current []gradualDay
 	devID := dev.ID
-	devName := dev.Name
 
 	flush := func() {
-		if len(current) >= 1 {
-			first := current[0].Date
-			last := current[len(current)-1].Date
-			detected := current[0].Date
-
+		if len(current) >= minDays {
 			values := make([]DayValue, len(current))
 			for i, it := range current {
-				v := it.Value
-				exp := it.Expected
-				values[i] = DayValue{
-					Date:     it.Date,
-					Value:    &v,
-					Expected: &exp,
-				}
+				v, exp := it.Value, it.Expected
+				values[i] = DayValue{Date: it.Date, Value: &v, Expected: &exp}
 			}
-
 			did := devID
 			incidents = append(incidents, incident{
 				Rule:       "gradual_loss",
 				PlantID:    plantID,
 				DeviceID:   &did,
-				DevName:    devName,
+				DevName:    dev.Name,
 				Severity:   "warning",
-				Title:      fmt.Sprintf("Perda gradual de geração em %s", devName),
-				FirstDate:  first,
-				LastDate:   last,
-				DetectedOn: detected,
+				Title:      fmt.Sprintf("Perda gradual de geração em %s", dev.Name),
+				FirstDate:  current[0].Date,
+				LastDate:   current[len(current)-1].Date,
+				DetectedOn: current[minDays-1].Date,
 				NumDays:    len(current),
 				Values:     values,
 				Params:     effectiveParams,
@@ -833,48 +855,24 @@ func evaluateGradualLoss(plantID int64, dev domain.Device, items []readingItem, 
 		current = nil
 	}
 
-	for i := window - 1; i < len(okDays); i++ {
-		// Window: okDays[i-window+1 : i+1]
-		var winRatios []float64
-		for k := i - window + 1; k <= i; k++ {
-			winRatios = append(winRatios, okDays[k].Ratio)
+	for _, day := range days {
+		excess := day.Drop
+		var peerDrops []float64
+		for _, peer := range peers {
+			if v, ok := peer[day.Date]; ok {
+				peerDrops = append(peerDrops, v)
+			}
 		}
-
-		// Baseline: immediately preceding the window, up to `baseline` days
-		baseEnd := i - window + 1
-		baseStart := baseEnd - baseline
-		if baseStart < 0 {
-			baseStart = 0
+		if len(peerDrops) > 0 {
+			excess -= median(peerDrops)
 		}
-		if (baseEnd - baseStart) < minBaselineDays {
-			flush()
+		if excess <= drop {
 			continue
 		}
-
-		var baseRatios []float64
-		for k := baseStart; k < baseEnd; k++ {
-			baseRatios = append(baseRatios, okDays[k].Ratio)
-		}
-
-		winMed := median(winRatios)
-		baseMed := median(baseRatios)
-
-		if (baseMed - winMed) > drop {
-			data := okDays[i]
-			if len(current) == 0 {
-				current = append(current, data)
-			} else {
-				prev := current[len(current)-1]
-				if daysBetween(prev.Date, data.Date) == 1 {
-					current = append(current, data)
-				} else {
-					flush()
-					current = append(current, data)
-				}
-			}
-		} else {
+		if len(current) > 0 && daysBetween(current[len(current)-1].Date, day.Date)-1 > maxGapDays {
 			flush()
 		}
+		current = append(current, day)
 	}
 	flush()
 	return incidents

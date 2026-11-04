@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"testing"
 	"time"
 
@@ -1313,5 +1314,84 @@ func TestReplayDoesNotResolveLaterAlerts(t *testing.T) {
 	}
 	if got.Status != "open" {
 		t.Fatalf("expected later alert to remain open during early replay, got status %s", got.Status)
+	}
+}
+
+// gradualFixture builds a plant whose devices follow expected for 40 days and
+// then produce the given share of expected for `lowDays` days.
+func gradualFixture(t *testing.T, shares map[string]float64, lowDays int) (*store.Store, context.Context, int64) {
+	t.Helper()
+	st, ctx := setupTestDB(t)
+	tz := "America/Sao_Paulo"
+	names := make([]string, 0, len(shares))
+	for name := range shares {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	plant, devs := createTestPlant(t, ctx, st, "Plant-GL", tz, names...)
+	var runID int64
+	if err := st.DB().QueryRowContext(ctx, `INSERT INTO model_runs (name, version, plant_id, trained_at, active)
+		VALUES ('m', 'v1', ?, '2026-01-01T00:00:00Z', 1) RETURNING id`, plant.ID).Scan(&runID); err != nil {
+		t.Fatal(err)
+	}
+	start, _ := time.Parse(time.DateOnly, "2026-01-01")
+	for _, d := range devs {
+		var dates, raws []string
+		var vals []float64
+		for i := range 40 + lowDays {
+			date := start.AddDate(0, 0, i).Format(time.DateOnly)
+			share := 1.0
+			if i >= 40 {
+				share = shares[d.Name]
+			}
+			v := 40*share + float64(i%5)*0.01
+			dates, vals, raws = append(dates, date), append(vals, v), append(raws, fmt.Sprintf("%.2f", v))
+			if _, err := st.DB().ExecContext(ctx, `INSERT INTO predictions (device_id, date, model_run_id, kwh_expected, created_at)
+				VALUES (?, ?, ?, 40, '2026-01-01T00:00:00Z')`, d.ID, date, runID); err != nil {
+				t.Fatal(err)
+			}
+		}
+		insertDailyReadings(t, ctx, st, d.ID, tz, dates, vals, raws)
+	}
+	if _, err := quality.Classify(ctx, st, plant.ID, time.Time{}, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	return st, ctx, plant.ID
+}
+
+func TestGradualLossIgnoresPlantWideDrop(t *testing.T) {
+	st, ctx, plantID := gradualFixture(t, map[string]float64{"D1": 0.8, "D2": 0.8, "D3": 0.8}, 30)
+	sum, err := alerts.Run(ctx, st, plantID, alerts.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := sum.CountsByRule["gradual_loss"]; n != 0 {
+		t.Fatalf("a drop shared by every device is not a device loss, got %d alerts", n)
+	}
+}
+
+func TestGradualLossFiresForOneDeviceAgainstPeers(t *testing.T) {
+	st, ctx, plantID := gradualFixture(t, map[string]float64{"D1": 0.8, "D2": 1, "D3": 1}, 30)
+	sum, err := alerts.Run(ctx, st, plantID, alerts.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := sum.CountsByDevice["D1"]["gradual_loss"]; got != 1 {
+		t.Fatalf("D1 got %d alerts, want one incident", got)
+	}
+	if sum.CountsByRule["gradual_loss"] != 1 {
+		t.Fatalf("only D1 should alert, got %+v", sum.CountsByDevice)
+	}
+}
+
+func TestGradualLossRequiresPersistence(t *testing.T) {
+	// 10 low days leave only 3 days with the low value holding the 14-day median.
+	st, ctx, plantID := gradualFixture(t, map[string]float64{"D1": 0.8, "D2": 1}, 10)
+	sum, err := alerts.Run(ctx, st, plantID, alerts.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := sum.CountsByRule["gradual_loss"]; n != 0 {
+		t.Fatalf("a short dip must not alert, got %d", n)
 	}
 }

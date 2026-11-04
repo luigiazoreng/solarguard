@@ -271,10 +271,29 @@ func Run(ctx context.Context, st *store.Store, plantID int64, opts Options) (Sum
 			summary.SkippedRules = append(summary.SkippedRules, "gradual_loss")
 		} else {
 			evaluatedRules["gradual_loss"] = true
+			drops := make(map[int64][]gradualDay)
+			dropByDate := make(map[int64]map[string]float64)
 			for _, d := range devices {
-				if d.Kind != "plant" {
-					allIncidents = append(allIncidents, evaluateGradualLoss(plantID, d, byDevice[d.ID], preds[d.ID], params)...)
+				if d.Kind == "plant" {
+					continue
 				}
+				drops[d.ID] = gradualDrops(byDevice[d.ID], preds[d.ID], params)
+				dropByDate[d.ID] = make(map[string]float64, len(drops[d.ID]))
+				for _, day := range drops[d.ID] {
+					dropByDate[d.ID][day.Date] = day.Drop
+				}
+			}
+			for _, d := range devices {
+				if d.Kind == "plant" {
+					continue
+				}
+				var peers []map[string]float64
+				for id, m := range dropByDate {
+					if id != d.ID {
+						peers = append(peers, m)
+					}
+				}
+				allIncidents = append(allIncidents, evaluateGradualLoss(plantID, d, drops[d.ID], peers, params)...)
 			}
 		}
 	}
