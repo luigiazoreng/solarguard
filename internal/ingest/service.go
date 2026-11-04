@@ -3,19 +3,34 @@ package ingest
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"time"
 
+	"github.com/luigiazoreng/solarguard/internal/connector"
 	"github.com/luigiazoreng/solarguard/internal/connector/growatt"
 	"github.com/luigiazoreng/solarguard/internal/domain"
 	"github.com/luigiazoreng/solarguard/internal/store"
 )
 
-// ResolveSourceConnector validates credentials and returns a configured Connector for the source.
-func ResolveSourceConnector(src domain.Source) (*growatt.Connector, error) {
+// ErrNoConnector marks a source that has nothing to collect, such as an imported file.
+var ErrNoConnector = errors.New("tipo de fonte sem conector de coleta")
+
+// ResolveSourceConnector returns the configured connector for a source.
+// A new provider is added here, in this switch.
+func ResolveSourceConnector(src domain.Source) (connector.Connector, error) {
+	switch src.Kind {
+	case "growatt":
+		return newGrowattConnector(src)
+	default:
+		return nil, fmt.Errorf("fonte %q, tipo %q: %w", src.Name, src.Kind, ErrNoConnector)
+	}
+}
+
+func newGrowattConnector(src domain.Source) (connector.Connector, error) {
 	if src.CredentialEnv == "" {
 		return nil, fmt.Errorf("fonte %q não tem variável de credencial configurada", src.Name)
 	}
@@ -35,7 +50,7 @@ func ResolveSourceConnector(src domain.Source) (*growatt.Connector, error) {
 	return growatt.New(baseURL, token, &http.Client{Timeout: 30 * time.Second}), nil
 }
 
-// StartAll starts one Runner and one Scheduler for every enabled growatt source.
+// StartAll starts one Runner and one Scheduler for every enabled source that has a connector.
 // A missing token env var logs a clear error and skips that source without crashing the others.
 func StartAll(ctx context.Context, st *store.Store, logger *log.Logger) error {
 	sources, err := st.ListSources(ctx)
@@ -44,11 +59,14 @@ func StartAll(ctx context.Context, st *store.Store, logger *log.Logger) error {
 	}
 
 	for _, src := range sources {
-		if !src.Enabled || src.Kind != "growatt" {
+		if !src.Enabled {
 			continue
 		}
 
 		conn, err := ResolveSourceConnector(src)
+		if errors.Is(err, ErrNoConnector) {
+			continue
+		}
 		if err != nil {
 			if logger != nil {
 				logger.Printf("source %q (id %d): %v, skipping", src.Name, src.ID, err)
