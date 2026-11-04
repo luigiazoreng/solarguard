@@ -318,3 +318,26 @@ func TestSync_PlantInOtherTimezoneUsesItsOwnZone(t *testing.T) {
 		t.Errorf("expected location timezone 'America/Manaus', got %q", loc.Timezone)
 	}
 }
+
+func TestPlantWithoutTimezoneIsRejected(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	src, err := st.EnsureSource(ctx, domain.Source{Kind: "file", Name: "fonte", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lat, lon := -23.5, -46.6
+	p, err := st.UpsertPlant(ctx, domain.Plant{SourceID: src.ID, ExternalID: "SEM-FUSO", Name: "Sem fuso", Latitude: &lat, Longitude: &lon})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := weather.NewService(st, nil)
+	err = svc.SyncObserved(ctx, p.ID, "2026-01-01", "2026-01-02")
+	if err == nil || !strings.Contains(err.Error(), "time zone") {
+		t.Fatalf("got %v, want a time zone error", err)
+	}
+}

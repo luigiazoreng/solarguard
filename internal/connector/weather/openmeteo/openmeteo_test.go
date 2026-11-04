@@ -232,3 +232,15 @@ func TestForecastAndUserAgent(t *testing.T) {
 		t.Errorf("expected 4.0 kWh/m², got %v", days[0].IrradiationKWhM2)
 	}
 }
+
+func TestMissingRadiationUnitIsRejected(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"daily":{"time":["2026-01-01"],"shortwave_radiation_sum":[3.6]}}`))
+	}))
+	defer srv.Close()
+	p := openmeteo.New(openmeteo.WithArchiveURL(srv.URL))
+	_, err := p.Observed(context.Background(), connector.WeatherQuery{Timezone: "UTC"}, "2026-01-01", "2026-01-01")
+	if err == nil {
+		t.Fatal("a response with no radiation unit must be rejected")
+	}
+}

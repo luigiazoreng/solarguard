@@ -46,16 +46,16 @@ func (s *Service) resolveLocation(ctx context.Context, plant domain.Plant) (stor
 	lon := math.Round(*plant.Longitude*100) / 100
 	name := fmt.Sprintf("loc_%.2f_%.2f", lat, lon)
 
-	tz := plant.Timezone
-	if tz == "" {
-		tz = "UTC"
+	// A wrong zone would shift every weather day, so an unknown zone is an error.
+	if plant.Timezone == "" {
+		return store.WeatherLocation{}, fmt.Errorf("plant %d has no time zone", plant.ID)
 	}
 
 	loc, err := s.store.EnsureWeatherLocation(ctx, store.WeatherLocation{
 		Name:      name,
 		Latitude:  &lat,
 		Longitude: &lon,
-		Timezone:  tz,
+		Timezone:  plant.Timezone,
 	})
 	if err != nil {
 		return store.WeatherLocation{}, fmt.Errorf("ensure weather location: %w", err)

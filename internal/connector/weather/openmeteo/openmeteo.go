@@ -168,7 +168,7 @@ func (p *Provider) fetchDays(ctx context.Context, reqURL string) ([]connector.We
 
 	// Verify shortwave radiation unit if present
 	radUnit := data.DailyUnits.ShortwaveRadiationSum
-	if radUnit != "" && radUnit != "MJ/m²" && radUnit != "MJ/m2" {
+	if radUnit != "MJ/m²" && radUnit != "MJ/m2" {
 		return nil, fmt.Errorf("unexpected shortwave_radiation_sum unit %q: expected MJ/m2", radUnit)
 	}
 

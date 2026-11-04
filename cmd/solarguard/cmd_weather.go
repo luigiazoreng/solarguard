@@ -186,28 +186,14 @@ func runPlantSetLocation(ctx context.Context, args []string) error {
 	lat := fs.Float64("lat", 0, "latitude")
 	lon := fs.Float64("lon", 0, "longitude")
 
-	hasLat := false
-	hasLon := false
-	// We want to verify if lat and lon were explicitly passed
-	for i, arg := range args {
-		if arg == "--lat" || arg == "-lat" {
-			hasLat = true
-		}
-		if arg == "--lon" || arg == "-lon" {
-			hasLon = true
-		}
-		if len(arg) > 6 && arg[:6] == "--lat=" {
-			hasLat = true
-		}
-		if len(arg) > 6 && arg[:6] == "--lon=" {
-			hasLon = true
-		}
-		_ = i
-	}
-
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	hasLat, hasLon := false, false
+	fs.Visit(func(f *flag.Flag) {
+		hasLat = hasLat || f.Name == "lat"
+		hasLon = hasLon || f.Name == "lon"
+	})
 	if *plantID <= 0 || !hasLat || !hasLon {
 		return errors.New("uso: solarguard plant-set-location --plant-id ID --lat X --lon Y")
 	}
