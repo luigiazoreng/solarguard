@@ -38,3 +38,8 @@ ml/.venv/bin/python ml/compare_xgboost.py --db ./data/solarguard.db --plant-id 1
 1. **XGBoost Walk-Forward**: janela expansível iniciando com no mínimo 60 dias de treino e reajuste a cada 7 dias, prevendo os dias subsequentes sem vazamento temporal.
 2. **XGBoost 80/20 Cronológico**: divisão cronológica simples (primeiros 80% para treino, últimos 20% para teste), sem embaralhamento.
 3. **xgboost_old_alignment**: repetição dos cenários acima deslocando a data do clima em +1 dia, simulando o alinhamento errôneo anterior para evidenciar o impacto da correção de data.
+
+## Limites da avaliação
+
+- **Clima observado vs previsão real**: O backtest walk-forward utiliza o clima **observado** do dia avaliado. Portanto, as métricas obtidas medem a geração esperada condicionada ao clima conhecido (relação física/estatística entre radiação/temperatura e geração), e não uma previsão meteorológica antecipada sujeita a incertezas da previsão do tempo.
+- **Divergência entre walk-forward e 80/20**: O modelo com melhor desempenho pode diferir entre o walk-forward e a divisão 80/20 cronológica (por exemplo, ridge no walk-forward e physical no 80/20 neste conjunto de dados). A divisão 80/20 avalia apenas uma janela de teste fixa e única ao final da série, enquanto o walk-forward avalia janelas sucessivas ao longo de vários meses.

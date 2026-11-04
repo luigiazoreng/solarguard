@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/luigiazoreng/solarguard/internal/connector"
 	"github.com/luigiazoreng/solarguard/internal/domain"
 	"github.com/luigiazoreng/solarguard/internal/store"
 )
@@ -97,8 +98,11 @@ func Predict(ctx context.Context, st *store.Store, plantID int64, opts PredictOp
 		}
 	}
 
+	const minTrainDays = 60
+	const refitDays = 7
+
 	// 1. Run backtest to obtain honest walk-forward out-of-fold predictions
-	btRes, err := Backtest(ctx, st, plantID, BacktestOpts{MinTrainDays: 60, RefitDays: 7})
+	btRes, err := Backtest(ctx, st, plantID, BacktestOpts{MinTrainDays: minTrainDays, RefitDays: refitDays})
 	if err != nil {
 		return nil, fmt.Errorf("executar backtest para predições honestas: %w", err)
 	}
@@ -106,20 +110,67 @@ func Predict(ctx context.Context, st *store.Store, plantID int64, opts PredictOp
 	nowTime := time.Now().UTC()
 	var allPreds []store.Prediction
 	var futurePreds []store.Prediction
+	var messages []string
 
-	// Gather observed rows per device and fit active model on all ok rows
-	type devInfo struct {
-		dev        domain.Device
-		rows       []TrainRow
-		model      Model
-		rmse       float64
-		latestDate string
+	// Helper to instantiate a new model of active type for a device
+	newModelForDevice := func(d domain.Device) (Model, error) {
+		switch activeRun.Name {
+		case "calibrated":
+			return NewCalibratedModel(), nil
+		case "physical":
+			return NewPhysicalModel(d.PanelAreaM2, d.Efficiency)
+		case "ridge":
+			return NewRidgeModel(), nil
+		default:
+			return nil, fmt.Errorf("modelo desconhecido: %s", activeRun.Name)
+		}
 	}
 
-	var devInfos []devInfo
-	overallLatestObserved := "0000-00-00"
+	// 2. Fetch all observed weather days for this plant
+	allWeatherRows, err := st.PreferredObserved(ctx, *plant.WeatherLocationID, "0000-01-01", "9999-12-31", []string{"inmet", "open-meteo"})
+	if err != nil {
+		return nil, fmt.Errorf("obter clima observado: %w", err)
+	}
+
+	weatherMap := make(map[string]TrainRow)
+	var observedDates []string
+	latestObservedDate := "0000-00-00"
+
+	for _, w := range allWeatherRows {
+		if w.IrradiationKWhM2 == nil {
+			continue // A day missing irradiation is skipped
+		}
+		weatherMap[w.Date] = TrainRow{
+			Date:          w.Date,
+			Irradiation:   *w.IrradiationKWhM2,
+			TempMean:      w.TemperatureMeanC,
+			Precipitation: w.PrecipitationMM,
+			Humidity:      w.HumidityMeanPct,
+		}
+		observedDates = append(observedDates, w.Date)
+		if w.Date > latestObservedDate {
+			latestObservedDate = w.Date
+		}
+	}
+	sort.Strings(observedDates)
+
+	type validDevInfo struct {
+		dev    domain.Device
+		okRows []TrainRow
+		model  Model
+		rmse   float64
+	}
+
+	var validDevs []validDevInfo
 
 	for _, d := range generatingDevices {
+		// Verify model can be built for this device
+		fullModel, err := newModelForDevice(d)
+		if err != nil {
+			messages = append(messages, fmt.Sprintf("dispositivo %s ignorado: %v", d.Name, err))
+			continue
+		}
+
 		// Read ok readings
 		rowsQuery, err := st.DB().QueryContext(ctx, `SELECT period_start, value
 			FROM readings
@@ -149,34 +200,8 @@ func Predict(ctx context.Context, st *store.Store, plantID int64, opts PredictOp
 		}
 		rowsQuery.Close()
 
-		if len(okDates) == 0 {
-			continue
-		}
-
-		// Read observed weather
-		weatherDays, err := st.PreferredObserved(ctx, *plant.WeatherLocationID, okDates[0], okDates[len(okDates)-1], []string{"inmet", "open-meteo"})
-		if err != nil {
-			return nil, fmt.Errorf("obter clima observado: %w", err)
-		}
-
-		weatherMap := make(map[string]TrainRow)
-		for _, w := range weatherDays {
-			if w.IrradiationKWhM2 == nil {
-				continue
-			}
-			weatherMap[w.Date] = TrainRow{
-				Date:          w.Date,
-				Irradiation:   *w.IrradiationKWhM2,
-				TempMean:      w.TemperatureMeanC,
-				Precipitation: w.PrecipitationMM,
-				Humidity:      w.HumidityMeanPct,
-			}
-		}
-
-		var combined []TrainRow
+		var okRows []TrainRow
 		var prevKWh *float64
-		latestDevDate := "0000-00-00"
-
 		for _, date := range okDates {
 			val := readingMap[date]
 			w, ok := weatherMap[date]
@@ -192,35 +217,20 @@ func Predict(ctx context.Context, st *store.Store, plantID int64, opts PredictOp
 				Humidity:      w.Humidity,
 				PrevKWh:       prevKWh,
 			}
-			combined = append(combined, r)
+			okRows = append(okRows, r)
 			currVal := val
 			prevKWh = &currVal
-			if date > latestDevDate {
-				latestDevDate = date
-			}
-			if date > overallLatestObserved {
-				overallLatestObserved = date
-			}
 		}
 
-		// Instantiate and fit active model on all ok rows
-		var m Model
-		switch activeRun.Name {
-		case "calibrated":
-			c := NewCalibratedModel()
-			_ = c.Fit(combined)
-			m = c
-		case "physical":
-			if d.PanelAreaM2 != nil && d.Efficiency != nil {
-				p, err := NewPhysicalModel(d.PanelAreaM2, d.Efficiency)
-				if err == nil {
-					m = p
-				}
-			}
-		case "ridge":
-			r := NewRidgeModel()
-			_ = r.Fit(combined)
-			m = r
+		if len(okRows) < minTrainDays {
+			messages = append(messages, fmt.Sprintf("dispositivo %s possui histórico insuficiente (%d < %d)", d.Name, len(okRows), minTrainDays))
+			continue
+		}
+
+		// Fit model on all ok rows; if fit fails, skip device
+		if err := fullModel.Fit(okRows); err != nil {
+			messages = append(messages, fmt.Sprintf("dispositivo %s ignorado: erro ao ajustar modelo: %v", d.Name, err))
+			continue
 		}
 
 		rmse := deviceRMSE[d.Name]
@@ -228,51 +238,73 @@ func Predict(ctx context.Context, st *store.Store, plantID int64, opts PredictOp
 			rmse = btRes.DeviceResidualRMSE[d.Name]
 		}
 
-		devInfos = append(devInfos, devInfo{
-			dev:        d,
-			rows:       combined,
-			model:      m,
-			rmse:       rmse,
-			latestDate: latestDevDate,
+		validDevs = append(validDevs, validDevInfo{
+			dev:    d,
+			okRows: okRows,
+			model:  fullModel,
+			rmse:   rmse,
 		})
 
-		// Generate expected values for observed days:
-		// For dates in walk-forward history, use out-of-fold predictions
+		// For every date from the first date with enough history through the latest date with observed weather:
+		// Required: strictly at least minTrainDays prior ok rows before date D.
 		wfDevPreds := btRes.DeviceDayPredictions[d.Name]
 
-		for _, r := range combined {
+		// Pre-index okRows by date for binary search / counting
+		for _, targetDate := range observedDates {
+			// Count how many ok rows have Date < targetDate
+			priorCount := sort.Search(len(okRows), func(i int) bool {
+				return okRows[i].Date >= targetDate
+			})
+			if priorCount < minTrainDays {
+				// No row: before walk-forward starts / not enough history
+				continue
+			}
+
+			w := weatherMap[targetDate]
+			f := DayFeatures{
+				Date:          targetDate,
+				Irradiation:   w.Irradiation,
+				TempMean:      w.TempMean,
+				Precipitation: w.Precipitation,
+				Humidity:      w.Humidity,
+			}
+
 			var expected float64
-			if wfMap, ok := wfDevPreds[r.Date]; ok {
+
+			// On ok dates that were evaluated in walk-forward, keep using the honest walk-forward out-of-fold value
+			if wfMap, ok := wfDevPreds[targetDate]; ok && wfMap != nil {
 				if wfVal, ok := wfMap[activeRun.Name]; ok {
 					expected = wfVal
-				} else {
-					if m != nil {
-						p, err := m.Predict(DayFeatures{
-							Date:          r.Date,
-							Irradiation:   r.Irradiation,
-							TempMean:      r.TempMean,
-							Precipitation: r.Precipitation,
-							Humidity:      r.Humidity,
-						})
-						if err == nil {
-							expected = p
-						}
-					}
-				}
-			} else {
-				if m != nil {
-					p, err := m.Predict(DayFeatures{
-						Date:          r.Date,
-						Irradiation:   r.Irradiation,
-						TempMean:      r.TempMean,
-						Precipitation: r.Precipitation,
-						Humidity:      r.Humidity,
+					lower := math.Max(0.0, expected-1.645*rmse)
+					upper := math.Max(0.0, expected+1.645*rmse)
+					allPreds = append(allPreds, store.Prediction{
+						DeviceID:    d.ID,
+						Date:        targetDate,
+						ModelRunID:  activeRun.ID,
+						KWhExpected: expected,
+						KWhLower:    &lower,
+						KWhUpper:    &upper,
+						CreatedAt:   nowTime,
 					})
-					if err == nil {
-						expected = p
-					}
+					continue
 				}
 			}
+
+			// On any other date (reading not ok, or no reading):
+			// fit active model on that device's ok rows strictly before targetDate (requires >= minTrainDays)
+			priorRows := okRows[:priorCount]
+			m, err := newModelForDevice(d)
+			if err != nil {
+				continue
+			}
+			if err := m.Fit(priorRows); err != nil {
+				continue
+			}
+			p, err := m.Predict(f)
+			if err != nil {
+				continue
+			}
+			expected = p
 
 			// Approximate 90% prediction band (+/- 1.645 * RMSE)
 			lower := math.Max(0.0, expected-1.645*rmse)
@@ -280,7 +312,7 @@ func Predict(ctx context.Context, st *store.Store, plantID int64, opts PredictOp
 
 			allPreds = append(allPreds, store.Prediction{
 				DeviceID:    d.ID,
-				Date:        r.Date,
+				Date:        targetDate,
 				ModelRunID:  activeRun.ID,
 				KWhExpected: expected,
 				KWhLower:    &lower,
@@ -290,12 +322,11 @@ func Predict(ctx context.Context, st *store.Store, plantID int64, opts PredictOp
 		}
 	}
 
-	// 2. Future forecast predictions using weather_days kind forecast
+	// 3. Future forecast predictions using weather_days kind forecast
 	todayStr := time.Now().In(loc).Format(time.DateOnly)
 	startDate := todayStr
-	if overallLatestObserved >= startDate {
-		// Start day after latest observed
-		t, err := time.ParseInLocation(time.DateOnly, overallLatestObserved, loc)
+	if latestObservedDate >= startDate {
+		t, err := time.ParseInLocation(time.DateOnly, latestObservedDate, loc)
 		if err == nil {
 			startDate = t.AddDate(0, 0, 1).Format(time.DateOnly)
 		}
@@ -304,7 +335,7 @@ func Predict(ctx context.Context, st *store.Store, plantID int64, opts PredictOp
 	endDate := startDate
 	tEnd, err := time.ParseInLocation(time.DateOnly, startDate, loc)
 	if err == nil {
-		endDate = tEnd.AddDate(0, 0, opts.Days).Format(time.DateOnly)
+		endDate = tEnd.AddDate(0, 0, opts.Days-1).Format(time.DateOnly)
 	}
 
 	forecastDays, err := st.ListWeatherDays(ctx, *plant.WeatherLocationID, startDate, endDate, "forecast")
@@ -312,18 +343,28 @@ func Predict(ctx context.Context, st *store.Store, plantID int64, opts PredictOp
 		return nil, fmt.Errorf("consultar previsão do tempo: %w", err)
 	}
 
-	if len(forecastDays) == 0 {
-		msg := "nenhuma previsão de clima encontrada; nenhuma previsão futura gerada"
-		if res.Message == "" {
-			res.Message = msg
-		} else {
-			res.Message += "; " + msg
+	// Deduplicate and enforce exact Days limit
+	var uniqueForecastDates []string
+	forecastByDate := make(map[string]connector.WeatherDay)
+	for _, fd := range forecastDays {
+		if fd.IrradiationKWhM2 == nil {
+			continue
 		}
+		if _, exists := forecastByDate[fd.Date]; !exists {
+			uniqueForecastDates = append(uniqueForecastDates, fd.Date)
+			forecastByDate[fd.Date] = fd
+		}
+	}
+	sort.Strings(uniqueForecastDates)
+	if len(uniqueForecastDates) > opts.Days {
+		uniqueForecastDates = uniqueForecastDates[:opts.Days]
+	}
+
+	if len(uniqueForecastDates) == 0 {
+		messages = append(messages, "nenhuma previsão de clima encontrada; nenhuma previsão futura gerada")
 	} else {
-		for _, fd := range forecastDays {
-			if fd.IrradiationKWhM2 == nil {
-				continue
-			}
+		for _, dateStr := range uniqueForecastDates {
+			fd := forecastByDate[dateStr]
 			f := DayFeatures{
 				Date:          fd.Date,
 				Irradiation:   *fd.IrradiationKWhM2,
@@ -332,21 +373,18 @@ func Predict(ctx context.Context, st *store.Store, plantID int64, opts PredictOp
 				Humidity:      fd.HumidityMeanPct,
 			}
 
-			for _, di := range devInfos {
-				if di.model == nil {
-					continue
-				}
-				expected, err := di.model.Predict(f)
+			for _, v := range validDevs {
+				expected, err := v.model.Predict(f)
 				if err != nil {
 					continue
 				}
 
 				// Approximate 90% prediction band (+/- 1.645 * RMSE)
-				lower := math.Max(0.0, expected-1.645*di.rmse)
-				upper := math.Max(0.0, expected+1.645*di.rmse)
+				lower := math.Max(0.0, expected-1.645*v.rmse)
+				upper := math.Max(0.0, expected+1.645*v.rmse)
 
 				pred := store.Prediction{
-					DeviceID:    di.dev.ID,
+					DeviceID:    v.dev.ID,
 					Date:        fd.Date,
 					ModelRunID:  activeRun.ID,
 					KWhExpected: expected,
@@ -360,13 +398,17 @@ func Predict(ctx context.Context, st *store.Store, plantID int64, opts PredictOp
 		}
 	}
 
-	// 3. Upsert into database
+	// 4. Upsert into database
 	if err := st.UpsertPredictions(ctx, allPreds); err != nil {
 		return nil, fmt.Errorf("upsert predições: %w", err)
 	}
 
 	res.Predictions = allPreds
 	res.FutureDays = futurePreds
+
+	if len(messages) > 0 {
+		res.Message = strings.Join(messages, "; ")
+	}
 
 	// Sort future days by date and device
 	sort.Slice(res.FutureDays, func(i, j int) bool {
