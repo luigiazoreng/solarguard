@@ -49,10 +49,12 @@ func (inc incident) DedupeKey() string {
 func evaluateStuckValue(plantID int64, dev domain.Device, items []readingItem, cfgParams map[string]any) []incident {
 	minDays := getParamInt(cfgParams, "min_days", 3)
 	maxGapDays := getParamInt(cfgParams, "max_gap_days", 5)
+	resolveAfterDays := getParamInt(cfgParams, "resolve_after_days", 3)
 
 	effectiveParams := map[string]any{
-		"min_days":     minDays,
-		"max_gap_days": maxGapDays,
+		"min_days":           minDays,
+		"max_gap_days":       maxGapDays,
+		"resolve_after_days": resolveAfterDays,
 	}
 
 	var incidents []incident
@@ -120,10 +122,12 @@ func evaluateStuckValue(plantID int64, dev domain.Device, items []readingItem, c
 func evaluateZeroGeneration(plantID int64, dev domain.Device, items []readingItem, cfgParams map[string]any) []incident {
 	maxGapDays := getParamInt(cfgParams, "max_gap_days", 5)
 	criticalDays := getParamInt(cfgParams, "critical_days", 3)
+	resolveAfterDays := getParamInt(cfgParams, "resolve_after_days", 3)
 
 	effectiveParams := map[string]any{
-		"max_gap_days":  maxGapDays,
-		"critical_days": criticalDays,
+		"max_gap_days":       maxGapDays,
+		"critical_days":      criticalDays,
+		"resolve_after_days": resolveAfterDays,
 	}
 
 	var incidents []incident
@@ -195,7 +199,10 @@ func evaluateZeroGeneration(plantID int64, dev domain.Device, items []readingIte
 }
 
 func evaluateImplausibleReading(plantID int64, dev domain.Device, items []readingItem, cfgParams map[string]any) []incident {
-	effectiveParams := map[string]any{}
+	resolveAfterDays := getParamInt(cfgParams, "resolve_after_days", 3)
+	effectiveParams := map[string]any{
+		"resolve_after_days": resolveAfterDays,
+	}
 
 	var incidents []incident
 	var current []readingItem
@@ -269,7 +276,10 @@ func evaluatePlantNoGeneration(plantID int64, devices []domain.Device, byDate ma
 		return nil
 	}
 
-	effectiveParams := map[string]any{}
+	resolveAfterDays := getParamInt(cfgParams, "resolve_after_days", 3)
+	effectiveParams := map[string]any{
+		"resolve_after_days": resolveAfterDays,
+	}
 
 	var incidents []incident
 	var current []string
@@ -348,7 +358,10 @@ func evaluatePlantNoGeneration(plantID int64, devices []domain.Device, byDate ma
 }
 
 func evaluateMissingData(plantID int64, devices []domain.Device, devReadings map[int64][]readingItem, plantEarliest, cutoffDate, todayStr string, cfgParams map[string]any) []incident {
-	effectiveParams := map[string]any{}
+	resolveAfterDays := getParamInt(cfgParams, "resolve_after_days", 3)
+	effectiveParams := map[string]any{
+		"resolve_after_days": resolveAfterDays,
+	}
 
 	var nonPlantDevs []domain.Device
 	for _, d := range devices {
@@ -363,7 +376,6 @@ func evaluateMissingData(plantID int64, devices []domain.Device, devReadings map
 	// Index existing reading dates per device
 	devDateSets := make(map[int64]map[string]bool)
 	devEarliest := make(map[int64]string)
-	devLatest := make(map[int64]string)
 
 	for _, d := range nonPlantDevs {
 		devDateSets[d.ID] = make(map[string]bool)
@@ -372,9 +384,6 @@ func evaluateMissingData(plantID int64, devices []domain.Device, devReadings map
 			devDateSets[d.ID][it.Date] = true
 			if devEarliest[d.ID] == "" || it.Date < devEarliest[d.ID] {
 				devEarliest[d.ID] = it.Date
-			}
-			if devLatest[d.ID] == "" || it.Date > devLatest[d.ID] {
-				devLatest[d.ID] = it.Date
 			}
 		}
 	}
@@ -458,17 +467,18 @@ func evaluateMissingData(plantID int64, devices []domain.Device, devReadings map
 	flushPlant()
 
 	// 2. Identify device-level missing dates
+	// End the device-level range at the plant's newest date (tCutoff) so a device
+	// that stops reporting while peers continue is properly flagged.
 	for _, d := range nonPlantDevs {
 		firstD := devEarliest[d.ID]
-		lastD := devLatest[d.ID]
-		if firstD == "" || firstD == lastD {
+		if firstD == "" {
 			continue
 		}
 
 		tDevStart, _ := time.Parse(time.DateOnly, firstD)
-		tDevEnd, _ := time.Parse(time.DateOnly, lastD)
-		if tDevEnd.After(tCutoff) {
-			tDevEnd = tCutoff
+		tDevEnd := tCutoff
+		if tDevEnd.Before(tDevStart) {
+			continue
 		}
 
 		var devMissingDates []string
@@ -540,11 +550,13 @@ func evaluatePeerDivergence(plantID int64, devices []domain.Device, byDate map[s
 	minDays := getParamInt(cfgParams, "min_days", 3)
 	ratio := getParamFloat(cfgParams, "ratio", 0.70)
 	minPeerKWh := getParamFloat(cfgParams, "min_peer_kwh", 5.0)
+	resolveAfterDays := getParamInt(cfgParams, "resolve_after_days", 3)
 
 	effectiveParams := map[string]any{
-		"min_days":     minDays,
-		"ratio":        ratio,
-		"min_peer_kwh": minPeerKWh,
+		"min_days":           minDays,
+		"ratio":              ratio,
+		"min_peer_kwh":       minPeerKWh,
+		"resolve_after_days": resolveAfterDays,
 	}
 
 	var nonPlantDevs []domain.Device
@@ -657,11 +669,13 @@ func evaluateUnderExpected(plantID int64, dev domain.Device, items []readingItem
 	minDays := getParamInt(cfgParams, "min_days", 3)
 	ratio := getParamFloat(cfgParams, "ratio", 0.70)
 	minExpectedKWh := getParamFloat(cfgParams, "min_expected_kwh", 5.0)
+	resolveAfterDays := getParamInt(cfgParams, "resolve_after_days", 3)
 
 	effectiveParams := map[string]any{
-		"min_days":         minDays,
-		"ratio":            ratio,
-		"min_expected_kwh": minExpectedKWh,
+		"min_days":           minDays,
+		"ratio":              ratio,
+		"min_expected_kwh":   minExpectedKWh,
+		"resolve_after_days": resolveAfterDays,
 	}
 
 	var incidents []incident
@@ -746,12 +760,14 @@ func evaluateGradualLoss(plantID int64, dev domain.Device, items []readingItem, 
 	baseline := getParamInt(cfgParams, "baseline", 60)
 	minBaselineDays := getParamInt(cfgParams, "min_baseline_days", 30)
 	drop := getParamFloat(cfgParams, "drop", 0.10)
+	resolveAfterDays := getParamInt(cfgParams, "resolve_after_days", 3)
 
 	effectiveParams := map[string]any{
-		"window":            window,
-		"baseline":          baseline,
-		"min_baseline_days": minBaselineDays,
-		"drop":              drop,
+		"window":             window,
+		"baseline":           baseline,
+		"min_baseline_days":  minBaselineDays,
+		"drop":               drop,
+		"resolve_after_days": resolveAfterDays,
 	}
 
 	type okDay struct {
@@ -862,6 +878,54 @@ func evaluateGradualLoss(plantID int64, dev domain.Device, items []readingItem, 
 	}
 	flush()
 	return incidents
+}
+
+func evaluateStaleData(plantID int64, plantNewestDate, todayStr, localYesterday string, cfgParams map[string]any) []incident {
+	if plantNewestDate == "" {
+		return nil
+	}
+	maxAgeDays := getParamInt(cfgParams, "max_age_days", 2)
+	resolveAfterDays := getParamInt(cfgParams, "resolve_after_days", 3)
+	effectiveParams := map[string]any{
+		"max_age_days":       maxAgeDays,
+		"resolve_after_days": resolveAfterDays,
+	}
+
+	ageDays := daysBetween(plantNewestDate, todayStr)
+	if ageDays <= maxAgeDays {
+		return nil
+	}
+
+	tNewest, err := time.Parse(time.DateOnly, plantNewestDate)
+	if err != nil {
+		return nil
+	}
+	firstDate := tNewest.AddDate(0, 0, 1).Format(time.DateOnly)
+	lastDate := localYesterday
+	if lastDate < firstDate {
+		lastDate = firstDate
+	}
+	numDays := daysBetween(firstDate, lastDate) + 1
+	if numDays < 1 {
+		numDays = 1
+	}
+
+	return []incident{
+		{
+			Rule:       "stale_data",
+			PlantID:    plantID,
+			DeviceID:   nil,
+			DevName:    "Usina",
+			Severity:   "critical",
+			Title:      "Sem dados recentes da usina",
+			FirstDate:  firstDate,
+			LastDate:   lastDate,
+			DetectedOn: firstDate,
+			NumDays:    numDays,
+			Values:     []DayValue{{Date: plantNewestDate}},
+			Params:     effectiveParams,
+		},
+	}
 }
 
 func median(vals []float64) float64 {

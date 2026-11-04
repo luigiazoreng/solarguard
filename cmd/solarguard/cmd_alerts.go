@@ -21,8 +21,6 @@ func init() {
 func runAlertsRun(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("alerts-run", flag.ContinueOnError)
 	plantID := fs.Int64("plant-id", 0, "identificador interno da planta (omita para todas)")
-	fromStr := fs.String("from", "", "data inicial (YYYY-MM-DD)")
-	toStr := fs.String("to", "", "data final (YYYY-MM-DD)")
 	asOfStr := fs.String("as-of", "", "data de referência para replay (YYYY-MM-DD)")
 
 	if err := fs.Parse(args); err != nil {
@@ -56,34 +54,14 @@ func runAlertsRun(ctx context.Context, args []string) error {
 	}
 
 	for _, p := range plants {
-		var from, to time.Time
-		if *fromStr != "" {
-			fStart, _, err := domain.LocalDay(*fromStr, p.Timezone)
-			if err != nil {
-				return fmt.Errorf("data inicial inválida %q: %w", *fromStr, err)
-			}
-			from = fStart
-		}
-		if *toStr != "" {
-			_, tEnd, err := domain.LocalDay(*toStr, p.Timezone)
-			if err != nil {
-				return fmt.Errorf("data final inválida %q: %w", *toStr, err)
-			}
-			to = tEnd
-		}
-
-		// 1. Run quality classifier first
-		if _, err := quality.Classify(ctx, st, p.ID, from, to); err != nil {
+		// 1. Run quality classifier on full history first
+		if _, err := quality.Classify(ctx, st, p.ID, time.Time{}, time.Time{}); err != nil {
 			return fmt.Errorf("classificar qualidade da planta %s (id=%d): %w", p.Name, p.ID, err)
 		}
 
-		// 2. Run alerts engine
+		// 2. Run alerts engine on full history (or replay with as-of)
 		opts := alerts.Options{
-			From:     from,
-			To:       to,
-			FromDate: *fromStr,
-			ToDate:   *toStr,
-			AsOf:     *asOfStr,
+			AsOf: *asOfStr,
 		}
 		summary, err := alerts.Run(ctx, st, p.ID, opts)
 		if err != nil {
@@ -138,7 +116,14 @@ func runAlertsRun(ctx context.Context, args []string) error {
 			sort.Strings(summary.SkippedRules)
 			fmt.Println("Regras ignoradas:")
 			for _, r := range summary.SkippedRules {
-				fmt.Printf("  - %s (sem previsões ativas)\n", r)
+				switch r {
+				case "stale_data":
+					fmt.Printf("  - %s (fonte de dados estática)\n", r)
+				case "under_expected", "gradual_loss":
+					fmt.Printf("  - %s (sem previsões ativas)\n", r)
+				default:
+					fmt.Printf("  - %s\n", r)
+				}
 			}
 		}
 		fmt.Println()

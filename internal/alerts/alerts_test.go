@@ -27,41 +27,7 @@ func setupTestDB(t *testing.T) (*store.Store, context.Context) {
 }
 
 func createTestPlant(t *testing.T, ctx context.Context, st *store.Store, name, tz string, devNames ...string) (domain.Plant, []domain.Device) {
-	t.Helper()
-	src, err := st.EnsureSource(ctx, domain.Source{
-		Kind: "test",
-		Name: "test-src-" + name,
-	})
-	if err != nil {
-		t.Fatalf("ensure source: %v", err)
-	}
-	p, err := st.UpsertPlant(ctx, domain.Plant{
-		SourceID:   src.ID,
-		ExternalID: "ext-" + name,
-		Name:       name,
-		Timezone:   tz,
-	})
-	if err != nil {
-		t.Fatalf("upsert plant: %v", err)
-	}
-	var devs []domain.Device
-	for _, dName := range devNames {
-		area := 42.0
-		eff := 0.18
-		d, err := st.UpsertDevice(ctx, domain.Device{
-			PlantID:     p.ID,
-			ExternalID:  "ext-" + dName,
-			Name:        dName,
-			Kind:        "inverter",
-			PanelAreaM2: &area,
-			Efficiency:  &eff,
-		})
-		if err != nil {
-			t.Fatalf("upsert device: %v", err)
-		}
-		devs = append(devs, d)
-	}
-	return p, devs
+	return createTestPlantWithKind(t, ctx, st, name, tz, "file", devNames...)
 }
 
 func insertDailyReadings(t *testing.T, ctx context.Context, st *store.Store, devID int64, tz string, dates []string, vals []float64, rawVals []string) {
@@ -852,5 +818,500 @@ func TestStoreAlerts_StatusChangesAndNotFound(t *testing.T) {
 	}
 	if len(list) != 1 {
 		t.Fatalf("expected 1 alert matching filters, got %d", len(list))
+	}
+}
+
+func createTestPlantWithKind(t *testing.T, ctx context.Context, st *store.Store, name, tz, srcKind string, devNames ...string) (domain.Plant, []domain.Device) {
+	t.Helper()
+	src, err := st.EnsureSource(ctx, domain.Source{
+		Kind: srcKind,
+		Name: "test-src-" + name,
+	})
+	if err != nil {
+		t.Fatalf("ensure source: %v", err)
+	}
+	p, err := st.UpsertPlant(ctx, domain.Plant{
+		SourceID:   src.ID,
+		ExternalID: "ext-" + name,
+		Name:       name,
+		Timezone:   tz,
+	})
+	if err != nil {
+		t.Fatalf("upsert plant: %v", err)
+	}
+	var devs []domain.Device
+	for _, dName := range devNames {
+		area := 42.0
+		eff := 0.18
+		d, err := st.UpsertDevice(ctx, domain.Device{
+			PlantID:     p.ID,
+			ExternalID:  "ext-" + dName,
+			Name:        dName,
+			Kind:        "inverter",
+			PanelAreaM2: &area,
+			Efficiency:  &eff,
+		})
+		if err != nil {
+			t.Fatalf("upsert device: %v", err)
+		}
+		devs = append(devs, d)
+	}
+	return p, devs
+}
+
+// 1. Defect 1: Silent stop is never flagged.
+// missing_data only checks up to each device's own last reading, so a device that stops
+// reporting while its peers continue raises nothing.
+// TestDeviceThatStopsReportingIsFlagged: D1 stops 5 days before D2. The alert stays one growing incident.
+func TestDeviceThatStopsReportingIsFlagged(t *testing.T) {
+	st, ctx := setupTestDB(t)
+	tz := "America/Sao_Paulo"
+	plant, devs := createTestPlant(t, ctx, st, "Plant-SilentStop", tz, "D1", "D2")
+	d1 := devs[0]
+	d2 := devs[1]
+
+	// Dates: 2026-03-01 to 2026-03-10 (10 days).
+	// D2 reports on all 10 days.
+	// D1 reports on 2026-03-01..2026-03-05 (5 days) and stops.
+	var d2Dates []string
+	var d2Vals []float64
+	var d2Raws []string
+	for i := 1; i <= 10; i++ {
+		dStr := fmt.Sprintf("2026-03-%02d", i)
+		d2Dates = append(d2Dates, dStr)
+		val := 15.0 + float64(i)*0.1
+		d2Vals = append(d2Vals, val)
+		d2Raws = append(d2Raws, fmt.Sprintf("%.2f", val))
+	}
+	insertDailyReadings(t, ctx, st, d2.ID, tz, d2Dates, d2Vals, d2Raws)
+
+	var d1Dates []string
+	var d1Vals []float64
+	var d1Raws []string
+	for i := 1; i <= 5; i++ {
+		dStr := fmt.Sprintf("2026-03-%02d", i)
+		d1Dates = append(d1Dates, dStr)
+		val := 15.0 + float64(i)*0.1
+		d1Vals = append(d1Vals, val)
+		d1Raws = append(d1Raws, fmt.Sprintf("%.2f", val))
+	}
+	insertDailyReadings(t, ctx, st, d1.ID, tz, d1Dates, d1Vals, d1Raws)
+
+	quality.Classify(ctx, st, plant.ID, time.Time{}, time.Time{})
+
+	// Fake now as 2026-03-15 (so none of 03-01..03-10 is "today")
+	fixedNow, _ := time.Parse(time.RFC3339, "2026-03-15T12:00:00-03:00")
+	opts := alerts.Options{
+		Now: func() time.Time { return fixedNow },
+	}
+	sum, err := alerts.Run(ctx, st, plant.ID, opts)
+	if err != nil {
+		t.Fatalf("run alerts: %v", err)
+	}
+
+	if sum.CountsByRule["missing_data"] == 0 {
+		t.Fatalf("expected missing_data alert for D1 that stopped reporting, got 0")
+	}
+
+	alertsList, err := st.ListAlerts(ctx, store.AlertFilter{PlantID: &plant.ID, Rule: "missing_data"})
+	if err != nil || len(alertsList) != 1 {
+		t.Fatalf("expected 1 missing_data alert, got %d (err: %v)", len(alertsList), err)
+	}
+	a := alertsList[0]
+	if a.DeviceID == nil || *a.DeviceID != d1.ID {
+		t.Fatalf("expected alert for D1, got device_id %v", a.DeviceID)
+	}
+	if a.FirstDate != "2026-03-06" {
+		t.Errorf("expected FirstDate 2026-03-06, got %s", a.FirstDate)
+	}
+	if a.LastDate != "2026-03-10" {
+		t.Errorf("expected LastDate 2026-03-10, got %s", a.LastDate)
+	}
+}
+
+// 2. Defect 2: Stale data rule.
+func TestStaleDataFiresForLiveSource(t *testing.T) {
+	st, ctx := setupTestDB(t)
+	tz := "America/Sao_Paulo"
+	plant, devs := createTestPlantWithKind(t, ctx, st, "Plant-LiveStale", tz, "growatt", "D1")
+	d1 := devs[0]
+
+	// Last reading is 2026-03-05
+	insertDailyReadings(t, ctx, st, d1.ID, tz, []string{"2026-03-05"}, []float64{10.0}, []string{"10.0"})
+	quality.Classify(ctx, st, plant.ID, time.Time{}, time.Time{})
+
+	// Now is 2026-03-10 (5 days after 2026-03-05 > max_age_days 2).
+	fixedNow, _ := time.Parse(time.RFC3339, "2026-03-10T12:00:00-03:00")
+	sum, err := alerts.Run(ctx, st, plant.ID, alerts.Options{
+		Now: func() time.Time { return fixedNow },
+	})
+	if err != nil {
+		t.Fatalf("run alerts: %v", err)
+	}
+
+	if sum.CountsByRule["stale_data"] != 1 {
+		t.Fatalf("expected 1 stale_data alert, got %d", sum.CountsByRule["stale_data"])
+	}
+
+	alertsList, _ := st.ListAlerts(ctx, store.AlertFilter{PlantID: &plant.ID, Rule: "stale_data"})
+	if len(alertsList) != 1 {
+		t.Fatalf("expected 1 stale_data alert in store, got %d", len(alertsList))
+	}
+	a := alertsList[0]
+	if a.DeviceID != nil {
+		t.Errorf("expected DeviceID NULL for stale_data, got %v", a.DeviceID)
+	}
+	if a.Severity != "critical" {
+		t.Errorf("expected severity critical, got %s", a.Severity)
+	}
+	if a.FirstDate != "2026-03-06" {
+		t.Errorf("expected first_date 2026-03-06, got %s", a.FirstDate)
+	}
+	if a.LastDate != "2026-03-09" { // local yesterday
+		t.Errorf("expected last_date 2026-03-09, got %s", a.LastDate)
+	}
+	expectedKey := "stale_data|plant|2026-03-06"
+	if a.DedupeKey != expectedKey {
+		t.Errorf("expected dedupe_key %s, got %s", expectedKey, a.DedupeKey)
+	}
+}
+
+func TestStaleDataSkippedForFileSource(t *testing.T) {
+	st, ctx := setupTestDB(t)
+	tz := "America/Sao_Paulo"
+	plant, devs := createTestPlantWithKind(t, ctx, st, "Plant-FileStale", tz, "file", "D1")
+	d1 := devs[0]
+
+	// Last reading is 2026-03-05
+	insertDailyReadings(t, ctx, st, d1.ID, tz, []string{"2026-03-05"}, []float64{10.0}, []string{"10.0"})
+	quality.Classify(ctx, st, plant.ID, time.Time{}, time.Time{})
+
+	fixedNow, _ := time.Parse(time.RFC3339, "2026-03-10T12:00:00-03:00")
+	sum, err := alerts.Run(ctx, st, plant.ID, alerts.Options{
+		Now: func() time.Time { return fixedNow },
+	})
+	if err != nil {
+		t.Fatalf("run alerts: %v", err)
+	}
+
+	if sum.CountsByRule["stale_data"] != 0 {
+		t.Fatalf("expected 0 stale_data alerts for file source, got %d", sum.CountsByRule["stale_data"])
+	}
+	hasSkipped := false
+	for _, r := range sum.SkippedRules {
+		if r == "stale_data" {
+			hasSkipped = true
+		}
+	}
+	if !hasSkipped {
+		t.Errorf("expected stale_data in SkippedRules for file source, got %v", sum.SkippedRules)
+	}
+}
+
+func TestStaleDataResolvesWhenDataReturns(t *testing.T) {
+	st, ctx := setupTestDB(t)
+	tz := "America/Sao_Paulo"
+	plant, devs := createTestPlantWithKind(t, ctx, st, "Plant-StaleReturns", tz, "growatt", "D1")
+	d1 := devs[0]
+
+	insertDailyReadings(t, ctx, st, d1.ID, tz, []string{"2026-03-05"}, []float64{10.0}, []string{"10.0"})
+	quality.Classify(ctx, st, plant.ID, time.Time{}, time.Time{})
+
+	fixedNow1, _ := time.Parse(time.RFC3339, "2026-03-10T12:00:00-03:00")
+	sum1, err := alerts.Run(ctx, st, plant.ID, alerts.Options{
+		Now: func() time.Time { return fixedNow1 },
+	})
+	if err != nil || sum1.CountsByRule["stale_data"] != 1 {
+		t.Fatalf("run 1: %v, stale_data counts=%d", err, sum1.CountsByRule["stale_data"])
+	}
+
+	// New readings arrive for 2026-03-09 and 2026-03-10
+	insertDailyReadings(t, ctx, st, d1.ID, tz, []string{"2026-03-09", "2026-03-10"}, []float64{11.0, 12.0}, []string{"11.0", "12.0"})
+	quality.Classify(ctx, st, plant.ID, time.Time{}, time.Time{})
+
+	// Now is 2026-03-11 (newest reading 2026-03-10 is age 1 <= 2).
+	fixedNow2, _ := time.Parse(time.RFC3339, "2026-03-11T12:00:00-03:00")
+	sum2, err := alerts.Run(ctx, st, plant.ID, alerts.Options{
+		Now: func() time.Time { return fixedNow2 },
+	})
+	if err != nil {
+		t.Fatalf("run 2: %v", err)
+	}
+
+	alertsList, _ := st.ListAlerts(ctx, store.AlertFilter{PlantID: &plant.ID, Rule: "stale_data"})
+	if len(alertsList) != 1 || alertsList[0].Status != "resolved" {
+		t.Fatalf("expected stale_data alert to be resolved, got %+v (sum.Resolved=%d)", alertsList, sum2.Resolved)
+	}
+}
+
+func TestStaleDataNotEvaluatedInReplay(t *testing.T) {
+	st, ctx := setupTestDB(t)
+	tz := "America/Sao_Paulo"
+	plant, devs := createTestPlantWithKind(t, ctx, st, "Plant-StaleReplay", tz, "growatt", "D1")
+	d1 := devs[0]
+
+	insertDailyReadings(t, ctx, st, d1.ID, tz, []string{"2026-03-01"}, []float64{10.0}, []string{"10.0"})
+	quality.Classify(ctx, st, plant.ID, time.Time{}, time.Time{})
+
+	fixedNow, _ := time.Parse(time.RFC3339, "2026-03-10T12:00:00-03:00")
+	sum, err := alerts.Run(ctx, st, plant.ID, alerts.Options{
+		AsOf: "2026-03-01",
+		Now:  func() time.Time { return fixedNow },
+	})
+	if err != nil {
+		t.Fatalf("replay run: %v", err)
+	}
+
+	if sum.CountsByRule["stale_data"] != 0 {
+		t.Fatalf("expected 0 stale_data alerts during replay, got %d", sum.CountsByRule["stale_data"])
+	}
+}
+
+// 3. Defect 3: Config overrides are ignored in two ways.
+// resolve_after_days is read from inc.Params, but effectiveParams never contains it, so it is always 3.
+// And implausible_reading, plant_no_generation and missing_data pass an empty effectiveParams.
+// Test TestResolveAfterDaysOverride for at least two rules, one of them implausible_reading.
+func TestResolveAfterDaysOverride(t *testing.T) {
+	st, ctx := setupTestDB(t)
+	tz := "America/Sao_Paulo"
+	plant, devs := createTestPlant(t, ctx, st, "Plant-ResolveOverride", tz, "D1", "D2")
+	d1 := devs[0]
+	d2 := devs[1]
+
+	// Configure resolve_after_days = 1 for implausible_reading and stuck_value
+	if err := st.SetRuleConfig(ctx, store.RuleConfig{
+		Rule:       "implausible_reading",
+		PlantID:    &plant.ID,
+		Enabled:    true,
+		ParamsJSON: `{"resolve_after_days": 1}`,
+	}); err != nil {
+		t.Fatalf("config implausible_reading: %v", err)
+	}
+	if err := st.SetRuleConfig(ctx, store.RuleConfig{
+		Rule:       "stuck_value",
+		PlantID:    &plant.ID,
+		Enabled:    true,
+		ParamsJSON: `{"resolve_after_days": 1}`,
+	}); err != nil {
+		t.Fatalf("config stuck_value: %v", err)
+	}
+
+	// D1 has implausible reading on 2026-03-01, normal on 2026-03-02..2026-03-03
+	insertDailyReadings(t, ctx, st, d1.ID, tz, []string{"2026-03-01", "2026-03-02", "2026-03-03"},
+		[]float64{9000000.0, 10.0, 11.0}, []string{"9000000", "10.0", "11.0"})
+
+	// D2 has stuck reading on 2026-03-01..2026-03-03, normal on 2026-03-04
+	insertDailyReadings(t, ctx, st, d2.ID, tz, []string{"2026-03-01", "2026-03-02", "2026-03-03", "2026-03-04"},
+		[]float64{20.0, 20.0, 20.0, 25.0}, []string{"20.0", "20.0", "20.0", "25.0"})
+
+	quality.Classify(ctx, st, plant.ID, time.Time{}, time.Time{})
+
+	// Replay as of 2026-03-02 (for D1, last_date is 2026-03-01, 1 day later -> with override 1, auto-resolves!)
+	sum1, err := alerts.Run(ctx, st, plant.ID, alerts.Options{AsOf: "2026-03-02"})
+	if err != nil {
+		t.Fatalf("run AsOf 2026-03-02: %v", err)
+	}
+
+	alertsList1, _ := st.ListAlerts(ctx, store.AlertFilter{PlantID: &plant.ID, Rule: "implausible_reading"})
+	if len(alertsList1) != 1 {
+		t.Fatalf("expected 1 implausible_reading alert, got %d", len(alertsList1))
+	}
+	var ev1 alerts.Evidence
+	json.Unmarshal([]byte(alertsList1[0].EvidenceJSON), &ev1)
+	if ev1.Params["resolve_after_days"] != float64(1) && ev1.Params["resolve_after_days"] != 1 {
+		t.Fatalf("expected resolve_after_days: 1 in evidence params, got %v", ev1.Params["resolve_after_days"])
+	}
+	if alertsList1[0].Status != "resolved" {
+		t.Fatalf("expected implausible_reading to be resolved after 1 day with override 1, got status %s", alertsList1[0].Status)
+	}
+	_ = sum1
+
+	// Full run up to 2026-03-04 (for D2 stuck_value, last_date is 2026-03-03; on 2026-03-04 it is 1 day later -> auto-resolves!)
+	sum2, err := alerts.Run(ctx, st, plant.ID, alerts.Options{})
+	if err != nil {
+		t.Fatalf("run full: %v", err)
+	}
+	alertsList2, _ := st.ListAlerts(ctx, store.AlertFilter{PlantID: &plant.ID, Rule: "stuck_value"})
+	if len(alertsList2) != 1 {
+		t.Fatalf("expected 1 stuck_value alert, got %d", len(alertsList2))
+	}
+	var ev2 alerts.Evidence
+	json.Unmarshal([]byte(alertsList2[0].EvidenceJSON), &ev2)
+	if ev2.Params["resolve_after_days"] != float64(1) && ev2.Params["resolve_after_days"] != 1 {
+		t.Fatalf("expected resolve_after_days: 1 in evidence params for stuck_value, got %v", ev2.Params["resolve_after_days"])
+	}
+	if alertsList2[0].Status != "resolved" {
+		t.Fatalf("expected stuck_value to be resolved after 1 day with override 1, got status %s", alertsList2[0].Status)
+	}
+	_ = sum2
+}
+
+// 4. Defect 4: Episode cut changes first_date creating duplicate alert.
+// Test TestRerunWithAsOfThenFullDoesNotDuplicate: replay as-of mid-episode, then a full run;
+// the episode stays one alert with the final last_date.
+func TestRerunWithAsOfThenFullDoesNotDuplicate(t *testing.T) {
+	st, ctx := setupTestDB(t)
+	tz := "America/Sao_Paulo"
+	plant, devs := createTestPlant(t, ctx, st, "Plant-NoDup", tz, "D1")
+	d1 := devs[0]
+
+	// 6 days of stuck values: 2026-03-01 to 2026-03-06
+	dates := []string{"2026-03-01", "2026-03-02", "2026-03-03", "2026-03-04", "2026-03-05", "2026-03-06"}
+	vals := []float64{10, 10, 10, 10, 10, 10}
+	raws := []string{"10", "10", "10", "10", "10", "10"}
+	insertDailyReadings(t, ctx, st, d1.ID, tz, dates, vals, raws)
+
+	quality.Classify(ctx, st, plant.ID, time.Time{}, time.Time{})
+
+	// 1. Replay as-of mid-episode: 2026-03-03
+	sum1, err := alerts.Run(ctx, st, plant.ID, alerts.Options{AsOf: "2026-03-03"})
+	if err != nil {
+		t.Fatalf("replay run: %v", err)
+	}
+	if sum1.New != 1 {
+		t.Fatalf("expected 1 new alert in replay, got %d", sum1.New)
+	}
+
+	alertsAfter1, _ := st.ListAlerts(ctx, store.AlertFilter{PlantID: &plant.ID})
+	if len(alertsAfter1) != 1 {
+		t.Fatalf("expected 1 alert stored, got %d", len(alertsAfter1))
+	}
+	if alertsAfter1[0].LastDate != "2026-03-03" {
+		t.Fatalf("expected LastDate 2026-03-03, got %s", alertsAfter1[0].LastDate)
+	}
+
+	// 2. Full run without AsOf
+	sum2, err := alerts.Run(ctx, st, plant.ID, alerts.Options{})
+	if err != nil {
+		t.Fatalf("full run: %v", err)
+	}
+	if sum2.New != 0 {
+		t.Fatalf("expected 0 new alerts on full run, got %d", sum2.New)
+	}
+
+	alertsAfter2, _ := st.ListAlerts(ctx, store.AlertFilter{PlantID: &plant.ID})
+	if len(alertsAfter2) != 1 {
+		t.Fatalf("expected still exactly 1 alert stored, got %d", len(alertsAfter2))
+	}
+	if alertsAfter2[0].FirstDate != "2026-03-01" {
+		t.Errorf("expected FirstDate 2026-03-01, got %s", alertsAfter2[0].FirstDate)
+	}
+	if alertsAfter2[0].LastDate != "2026-03-06" {
+		t.Errorf("expected LastDate 2026-03-06, got %s", alertsAfter2[0].LastDate)
+	}
+}
+
+// 5. Defect 5: Orphan alerts stay open forever.
+// An open or ack alert with no incident in this run stays open forever (rule disabled, or thresholds changed).
+// After processing incidents, any open or ack alert of the plant, whose dedupe key did not appear and
+// whose rule was evaluated in this run, is set to resolved, keeping its note, and counted in Resolved.
+// Skipped rules must not resolve anything. In replay mode (AsOf set), do not apply this step.
+// Test TestOrphanAlertResolves and TestReplayDoesNotResolveLaterAlerts.
+func TestOrphanAlertResolves(t *testing.T) {
+	st, ctx := setupTestDB(t)
+	tz := "America/Sao_Paulo"
+	plant, devs := createTestPlant(t, ctx, st, "Plant-Orphan", tz, "D1", "D2", "D3")
+
+	dates := []string{"2026-03-01", "2026-03-02", "2026-03-03"}
+	// D1 is 6.0 (< 0.7 * 10 = 7.0), peers are 10.0
+	insertDailyReadings(t, ctx, st, devs[1].ID, tz, dates, []float64{10.0, 10.1, 10.2}, []string{"10.0", "10.1", "10.2"})
+	insertDailyReadings(t, ctx, st, devs[2].ID, tz, dates, []float64{10.0, 10.1, 10.2}, []string{"10.0", "10.1", "10.2"})
+	insertDailyReadings(t, ctx, st, devs[0].ID, tz, dates, []float64{6.0, 6.1, 6.2}, []string{"6.0", "6.1", "6.2"})
+
+	quality.Classify(ctx, st, plant.ID, time.Time{}, time.Time{})
+
+	// Run 1: fires peer_divergence alert
+	sum1, err := alerts.Run(ctx, st, plant.ID, alerts.Options{})
+	if err != nil || sum1.CountsByRule["peer_divergence"] != 1 {
+		t.Fatalf("run 1: %v, counts=%+v", err, sum1.CountsByRule)
+	}
+
+	alertsList1, _ := st.ListAlerts(ctx, store.AlertFilter{PlantID: &plant.ID, Rule: "peer_divergence"})
+	if len(alertsList1) != 1 || alertsList1[0].Status != "open" {
+		t.Fatalf("expected 1 open alert, got %+v", alertsList1)
+	}
+
+	// Add a note to the alert
+	if err := st.AckAlert(ctx, alertsList1[0].ID, "Em investigacao"); err != nil {
+		t.Fatalf("ack: %v", err)
+	}
+
+	// Change config: ratio override to 0.40 (6.0 >= 0.40 * 10 = 4.0 -> condition no longer holds!)
+	if err := st.SetRuleConfig(ctx, store.RuleConfig{
+		Rule:       "peer_divergence",
+		PlantID:    &plant.ID,
+		Enabled:    true,
+		ParamsJSON: `{"ratio": 0.40}`,
+	}); err != nil {
+		t.Fatalf("set config: %v", err)
+	}
+
+	// Run 2: peer_divergence is evaluated, but no incidents produced.
+	// The existing ack alert should be automatically resolved, keeping its note, and counted in Resolved!
+	sum2, err := alerts.Run(ctx, st, plant.ID, alerts.Options{})
+	if err != nil {
+		t.Fatalf("run 2: %v", err)
+	}
+	if sum2.Resolved != 1 {
+		t.Errorf("expected 1 resolved in sum2, got %d", sum2.Resolved)
+	}
+
+	alertsList2, _ := st.ListAlerts(ctx, store.AlertFilter{PlantID: &plant.ID, Rule: "peer_divergence"})
+	if len(alertsList2) != 1 {
+		t.Fatalf("expected 1 alert, got %d", len(alertsList2))
+	}
+	if alertsList2[0].Status != "resolved" {
+		t.Errorf("expected orphan alert to be resolved, got %s", alertsList2[0].Status)
+	}
+	if alertsList2[0].Note != "Em investigacao" {
+		t.Errorf("expected note preserved, got %q", alertsList2[0].Note)
+	}
+}
+
+func TestReplayDoesNotResolveLaterAlerts(t *testing.T) {
+	st, ctx := setupTestDB(t)
+	tz := "America/Sao_Paulo"
+	plant, devs := createTestPlant(t, ctx, st, "Plant-ReplayLater", tz, "D1")
+	d1 := devs[0]
+
+	// Create an open alert for a later period (2026-03-10..2026-03-15) directly in DB
+	devID := d1.ID
+	laterAlert := store.Alert{
+		PlantID:   plant.ID,
+		DeviceID:  &devID,
+		Rule:      "stuck_value",
+		Severity:  "critical",
+		Status:    "open",
+		DedupeKey: "stuck_value|d1|2026-03-10",
+		Title:     "Leitura travada em D1",
+		FirstDate: "2026-03-10",
+		LastDate:  "2026-03-15",
+		Note:      "Alerta futuro",
+	}
+	if err := st.SaveAlert(ctx, &laterAlert); err != nil {
+		t.Fatalf("save alert: %v", err)
+	}
+
+	// Insert readings only for early period 2026-03-01..2026-03-03
+	insertDailyReadings(t, ctx, st, d1.ID, tz, []string{"2026-03-01", "2026-03-02", "2026-03-03"},
+		[]float64{10.0, 11.0, 12.0}, []string{"10.0", "11.0", "12.0"})
+	quality.Classify(ctx, st, plant.ID, time.Time{}, time.Time{})
+
+	// Replay as of 2026-03-03
+	sum, err := alerts.Run(ctx, st, plant.ID, alerts.Options{AsOf: "2026-03-03"})
+	if err != nil {
+		t.Fatalf("replay run: %v", err)
+	}
+	if sum.Resolved != 0 {
+		t.Errorf("expected 0 resolved in replay, got %d", sum.Resolved)
+	}
+
+	// The later alert MUST still be open!
+	got, err := st.GetAlert(ctx, laterAlert.ID)
+	if err != nil {
+		t.Fatalf("get alert: %v", err)
+	}
+	if got.Status != "open" {
+		t.Fatalf("expected later alert to remain open during early replay, got status %s", got.Status)
 	}
 }

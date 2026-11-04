@@ -13,11 +13,8 @@ import (
 
 // Options controls evaluation range and replay settings.
 type Options struct {
-	From     time.Time
-	To       time.Time
-	FromDate string // YYYY-MM-DD
-	ToDate   string // YYYY-MM-DD
-	AsOf     string // YYYY-MM-DD (default: newest reading date)
+	AsOf string           // YYYY-MM-DD (default: newest reading date)
+	Now  func() time.Time // default: time.Now
 }
 
 // Summary aggregates counts and results of an alerts evaluation run.
@@ -75,39 +72,21 @@ func Run(ctx context.Context, st *store.Store, plantID int64, opts Options) (Sum
 		devMap[d.ID] = d
 	}
 
-	todayStr := time.Now().In(loc).Format(time.DateOnly)
-
-	fromDate := opts.FromDate
-	if fromDate == "" && !opts.From.IsZero() {
-		fromDate = opts.From.In(loc).Format(time.DateOnly)
+	nowFn := opts.Now
+	if nowFn == nil {
+		nowFn = time.Now
 	}
+	todayStr := nowFn().In(loc).Format(time.DateOnly)
 
-	toDate := opts.ToDate
-	if toDate == "" && !opts.To.IsZero() {
-		toDate = opts.To.In(loc).Format(time.DateOnly)
-	}
-
+	var utcTo time.Time
 	if opts.AsOf != "" {
-		if toDate == "" || toDate > opts.AsOf {
-			toDate = opts.AsOf
-		}
-	}
-
-	var utcFrom, utcTo time.Time
-	if fromDate != "" {
-		fStart, _, err := domain.LocalDay(fromDate, plant.Timezone)
-		if err == nil {
-			utcFrom = fStart
-		}
-	}
-	if toDate != "" {
-		_, tEnd, err := domain.LocalDay(toDate, plant.Timezone)
+		_, tEnd, err := domain.LocalDay(opts.AsOf, plant.Timezone)
 		if err == nil {
 			utcTo = tEnd
 		}
 	}
 
-	rawReadings, err := st.ListReadingsByPlant(ctx, plantID, utcFrom, utcTo)
+	rawReadings, err := st.ListReadingsByPlant(ctx, plantID, time.Time{}, utcTo)
 	if err != nil {
 		return Summary{}, fmt.Errorf("list readings: %w", err)
 	}
@@ -125,12 +104,6 @@ func Run(ctx context.Context, st *store.Store, plantID int64, opts Options) (Sum
 			continue
 		}
 		dStr := r.PeriodStart.In(loc).Format(time.DateOnly)
-		if fromDate != "" && dStr < fromDate {
-			continue
-		}
-		if toDate != "" && dStr > toDate {
-			continue
-		}
 		if opts.AsOf != "" && dStr > opts.AsOf {
 			continue
 		}
@@ -222,10 +195,12 @@ func Run(ctx context.Context, st *store.Store, plantID int64, opts Options) (Sum
 		CountsByDevice: make(map[string]map[string]int),
 	}
 
+	evaluatedRules := make(map[string]bool)
 	var allIncidents []incident
 
 	// 1. stuck_value
 	if enabled, params := getRuleParams("stuck_value"); enabled {
+		evaluatedRules["stuck_value"] = true
 		for _, d := range devices {
 			if d.Kind != "plant" {
 				allIncidents = append(allIncidents, evaluateStuckValue(plantID, d, byDevice[d.ID], params)...)
@@ -235,6 +210,7 @@ func Run(ctx context.Context, st *store.Store, plantID int64, opts Options) (Sum
 
 	// 2. zero_generation
 	if enabled, params := getRuleParams("zero_generation"); enabled {
+		evaluatedRules["zero_generation"] = true
 		for _, d := range devices {
 			if d.Kind != "plant" {
 				allIncidents = append(allIncidents, evaluateZeroGeneration(plantID, d, byDevice[d.ID], params)...)
@@ -244,6 +220,7 @@ func Run(ctx context.Context, st *store.Store, plantID int64, opts Options) (Sum
 
 	// 3. implausible_reading
 	if enabled, params := getRuleParams("implausible_reading"); enabled {
+		evaluatedRules["implausible_reading"] = true
 		for _, d := range devices {
 			if d.Kind != "plant" {
 				allIncidents = append(allIncidents, evaluateImplausibleReading(plantID, d, byDevice[d.ID], params)...)
@@ -253,11 +230,13 @@ func Run(ctx context.Context, st *store.Store, plantID int64, opts Options) (Sum
 
 	// 4. plant_no_generation
 	if enabled, params := getRuleParams("plant_no_generation"); enabled {
+		evaluatedRules["plant_no_generation"] = true
 		allIncidents = append(allIncidents, evaluatePlantNoGeneration(plantID, devices, byDate, allDates, params)...)
 	}
 
 	// 5. missing_data
 	if enabled, params := getRuleParams("missing_data"); enabled {
+		evaluatedRules["missing_data"] = true
 		cutoff := plantNewestDate
 		if cutoff >= todayStr {
 			tToday, _ := time.Parse(time.DateOnly, todayStr)
@@ -268,6 +247,7 @@ func Run(ctx context.Context, st *store.Store, plantID int64, opts Options) (Sum
 
 	// 6. peer_divergence
 	if enabled, params := getRuleParams("peer_divergence"); enabled {
+		evaluatedRules["peer_divergence"] = true
 		allIncidents = append(allIncidents, evaluatePeerDivergence(plantID, devices, byDate, allDates, params)...)
 	}
 
@@ -276,6 +256,7 @@ func Run(ctx context.Context, st *store.Store, plantID int64, opts Options) (Sum
 		if !hasPredictions {
 			summary.SkippedRules = append(summary.SkippedRules, "under_expected")
 		} else {
+			evaluatedRules["under_expected"] = true
 			for _, d := range devices {
 				if d.Kind != "plant" {
 					allIncidents = append(allIncidents, evaluateUnderExpected(plantID, d, byDevice[d.ID], preds[d.ID], params)...)
@@ -289,11 +270,25 @@ func Run(ctx context.Context, st *store.Store, plantID int64, opts Options) (Sum
 		if !hasPredictions {
 			summary.SkippedRules = append(summary.SkippedRules, "gradual_loss")
 		} else {
+			evaluatedRules["gradual_loss"] = true
 			for _, d := range devices {
 				if d.Kind != "plant" {
 					allIncidents = append(allIncidents, evaluateGradualLoss(plantID, d, byDevice[d.ID], preds[d.ID], params)...)
 				}
 			}
+		}
+	}
+
+	// 9. stale_data
+	// Evaluated only when AsOf is empty, and skipped for sources of kind "file".
+	src, err := st.GetSource(ctx, plant.SourceID)
+	if err == nil && src.Kind == "file" {
+		summary.SkippedRules = append(summary.SkippedRules, "stale_data")
+	} else if opts.AsOf == "" {
+		if enabled, params := getRuleParams("stale_data"); enabled {
+			evaluatedRules["stale_data"] = true
+			localYesterday := nowFn().In(loc).AddDate(0, 0, -1).Format(time.DateOnly)
+			allIncidents = append(allIncidents, evaluateStaleData(plantID, plantNewestDate, todayStr, localYesterday, params)...)
 		}
 	}
 
@@ -307,8 +302,12 @@ func Run(ctx context.Context, st *store.Store, plantID int64, opts Options) (Sum
 		existingMap[existingAlerts[i].DedupeKey] = &existingAlerts[i]
 	}
 
+	processedKeys := make(map[string]bool)
+
 	// Process each incident
 	for _, inc := range allIncidents {
+		dedupeKey := inc.DedupeKey()
+		processedKeys[dedupeKey] = true
 		summary.CountsByRule[inc.Rule]++
 
 		devLabel := inc.DevName
@@ -340,7 +339,6 @@ func Run(ctx context.Context, st *store.Store, plantID int64, opts Options) (Sum
 		}
 		evJSON := string(evJSONBytes)
 
-		dedupeKey := inc.DedupeKey()
 		resolveAfterDays := getParamInt(inc.Params, "resolve_after_days", 3)
 
 		if existing, ok := existingMap[dedupeKey]; ok {
@@ -409,6 +407,26 @@ func Run(ctx context.Context, st *store.Store, plantID int64, opts Options) (Sum
 				summary.Resolved++
 			}
 			summary.Alerts = append(summary.Alerts, newAlert)
+		}
+	}
+
+	// Defect 5: Orphan alerts
+	// After processing incidents, any open or ack alert of the plant, whose dedupe key did not appear
+	// and whose rule was evaluated in this run, is set to resolved, keeping its note, and counted in Resolved.
+	// Skipped rules must not resolve anything. In replay mode (AsOf set), do not apply this step.
+	if opts.AsOf == "" {
+		for i := range existingAlerts {
+			existing := existingAlerts[i]
+			if existing.Status == "open" || existing.Status == "ack" {
+				if !processedKeys[existing.DedupeKey] && evaluatedRules[existing.Rule] {
+					existing.Status = "resolved"
+					if err := st.SaveAlert(ctx, &existing); err != nil {
+						return Summary{}, fmt.Errorf("resolve orphan alert %d: %w", existing.ID, err)
+					}
+					summary.Resolved++
+					summary.Alerts = append(summary.Alerts, existing)
+				}
+			}
 		}
 	}
 
