@@ -90,6 +90,8 @@ func (s *Server) handleManage(w http.ResponseWriter, r *http.Request) {
 		"plant_no_generation",
 		"gradual_loss",
 		"peer_divergence",
+		"device_offline",
+		"stale_data",
 	}
 
 	var ruleRows []RuleConfigRow

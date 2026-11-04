@@ -15,14 +15,14 @@
     <div class="card-title">Geração de Ontem</div>
     {{if .HasAnyYesterdayReadings}}
       <div class="card-value">{{formatFloat .TotalYesterdayMeasured 1}} <span style="font-size:1rem;font-weight:normal;">kWh</span></div>
-      <div class="card-sub">Esperado: {{formatFloat .TotalYesterdayExpected 1}} kWh</div>
+      <div class="card-sub">{{.PlantsWithReadings}} de {{.TotalPlants}} usinas com leitura válida</div>
     {{else}}
       <div class="card-value">-</div>
       <div class="card-sub">sem leitura ontem</div>
     {{end}}
   </div>
   <div class="card">
-    <div class="card-title">Desvio Médio de Ontem</div>
+    <div class="card-title">Medida x esperada ontem</div>
     <div class="card-value">
       {{if .HasDeviation}}
         {{if gt .TotalDeviationPct 0.0}}+{{end}}{{formatPercent .TotalDeviationPct}}
@@ -30,7 +30,7 @@
         -
       {{end}}
     </div>
-    <div class="card-sub">Comparado ao modelo numérico</div>
+    <div class="card-sub">{{if .HasDeviation}}Só usinas com leitura e valor esperado: {{.PlantsCompared}} de {{.TotalPlants}}{{else}}sem comparação disponível{{end}}</div>
   </div>
   <div class="card">
     <div class="card-title">Alertas Abertos</div>
@@ -60,7 +60,7 @@
         <th>Esperado</th>
         <th>Desvio</th>
         <th>Alertas Abertos</th>
-        <th>Última Leitura</th>
+        <th>Última leitura válida</th>
         <th>Status</th>
         <th>Ações</th>
       </tr>
@@ -87,7 +87,7 @@
           {{end}}
         </td>
         <td>
-          {{if and .YesterdayStats.HasReadings .YesterdayStats.HasExpected}}
+          {{if .HasDeviation}}
             <span style="font-weight:600;{{if lt .DeviationPct -15.0}}color:var(--danger);{{else if gt .DeviationPct 0.0}}color:var(--success);{{end}}">
               {{if gt .DeviationPct 0.0}}+{{end}}{{formatPercent .DeviationPct}}
             </span>

@@ -86,7 +86,7 @@
     <strong>Último contato:</strong> {{.LastContactStr}}
   </div>
   <div style="font-size:1.05rem;margin-bottom:12px;color:var(--danger);font-weight:600;">
-    Sem comunicação há {{.DaysOffline}} {{if eq .DaysOffline 1}}dia{{else}}dias{{end}}
+    {{if lt .DaysOffline 1}}Sem comunicação há menos de 1 dia{{else}}Sem comunicação há {{.DaysOffline}} {{if eq .DaysOffline 1}}dia{{else}}dias{{end}}{{end}}
   </div>
   <div class="note-box" style="margin:0;background:var(--card-bg);border-color:var(--border);">
     {{.OfflineDisclaimer}}
@@ -134,7 +134,7 @@
 <div class="card" style="margin-bottom:24px;">
   <dl style="margin:0;display:grid;grid-template-columns:auto 1fr;gap:8px 16px;">
     {{range $k, $v := .EvidenceParams}}
-    <dt style="font-weight:600;color:var(--text-muted);">{{$k}}:</dt>
+    <dt style="font-weight:600;color:var(--text-muted);">{{labelsParam $k}}:</dt>
     <dd style="margin:0;"><code>{{$v}}</code></dd>
     {{end}}
   </dl>

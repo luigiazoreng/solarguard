@@ -8,7 +8,7 @@
 <form method="GET" action="/alerts" class="filters-bar">
   <div>
     <label for="plant" style="display:block;font-size:0.8rem;color:var(--text-muted);margin-bottom:4px;">Usina</label>
-    <select id="plant" name="plant_id" class="form-control" onchange="this.form.submit()">
+    <select id="plant" name="plant_id" class="form-control" data-autosubmit>
       <option value="">Todas as usinas</option>
       {{range .Plants}}
       <option value="{{.ID}}" {{if eq $.FilterPlantID (printf "%d" .ID)}}selected{{end}}>{{.Name}}</option>
@@ -18,7 +18,7 @@
 
   <div>
     <label for="status" style="display:block;font-size:0.8rem;color:var(--text-muted);margin-bottom:4px;">Status</label>
-    <select id="status" name="status" class="form-control" onchange="this.form.submit()">
+    <select id="status" name="status" class="form-control" data-autosubmit>
       <option value="" {{if eq .FilterStatus ""}}selected{{end}}>Todos os status</option>
       <option value="open" {{if eq .FilterStatus "open"}}selected{{end}}>Aberto</option>
       <option value="ack" {{if eq .FilterStatus "ack"}}selected{{end}}>Reconhecido</option>
@@ -28,7 +28,7 @@
 
   <div>
     <label for="severity" style="display:block;font-size:0.8rem;color:var(--text-muted);margin-bottom:4px;">Severidade</label>
-    <select id="severity" name="severity" class="form-control" onchange="this.form.submit()">
+    <select id="severity" name="severity" class="form-control" data-autosubmit>
       <option value="" {{if eq .FilterSeverity ""}}selected{{end}}>Todas</option>
       <option value="critical" {{if eq .FilterSeverity "critical"}}selected{{end}}>Crítico</option>
       <option value="warning" {{if eq .FilterSeverity "warning"}}selected{{end}}>Aviso</option>
@@ -38,7 +38,7 @@
 
   <div>
     <label for="rule" style="display:block;font-size:0.8rem;color:var(--text-muted);margin-bottom:4px;">Regra</label>
-    <select id="rule" name="rule" class="form-control" onchange="this.form.submit()">
+    <select id="rule" name="rule" class="form-control" data-autosubmit>
       <option value="" {{if eq .FilterRule ""}}selected{{end}}>Todas as regras</option>
       <option value="zero_generation" {{if eq .FilterRule "zero_generation"}}selected{{end}}>Geração zerada</option>
       <option value="under_expected" {{if eq .FilterRule "under_expected"}}selected{{end}}>Abaixo do esperado</option>

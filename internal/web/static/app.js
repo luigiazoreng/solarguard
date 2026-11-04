@@ -9,6 +9,13 @@ document.addEventListener("DOMContentLoaded", function () {
     });
   }
 
+  // Filter dropdowns submit on change. The CSP forbids inline handlers.
+  document.addEventListener("change", function (evt) {
+    if (evt.target.matches("select[data-autosubmit]") && evt.target.form) {
+      evt.target.form.submit();
+    }
+  });
+
   // 2. Initialize uPlot chart if on plant page
   const chartEl = document.getElementById("plant-chart");
   if (chartEl && window.uPlot) {

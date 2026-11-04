@@ -60,11 +60,23 @@ func (s *Scheduler) CheckAndRunOnce(ctx context.Context) error {
 			continue
 		}
 		if alreadyRun {
-			// Already completed or attempted for today
-			continue
+			// Already ran today. Run again only if the collector stored readings
+			// after that run, for example a catch-up after a restart.
+			unchecked, err := s.store.HasUncheckedReadings(ctx, p.ID)
+			if err != nil {
+				if s.deps.Logger != nil {
+					s.deps.Logger.Warn("check unchecked readings", "plant_id", p.ID, "err", err)
+				}
+				continue
+			}
+			if !unchecked {
+				continue
+			}
 		}
 
-		_, _ = RunPlant(ctx, s.store, p.ID, s.deps)
+		if _, err := RunPlant(ctx, s.store, p.ID, s.deps); err != nil && s.deps.Logger != nil {
+			s.deps.Logger.Error("pipeline run failed", "plant_id", p.ID, "err", err)
+		}
 	}
 	return nil
 }

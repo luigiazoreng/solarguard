@@ -55,6 +55,18 @@ func (s *Store) HasPipelineRun(ctx context.Context, plantID int64, localDate str
 	return count > 0, nil
 }
 
+// HasUncheckedReadings returns true if the plant has readings still waiting for quality classification.
+func (s *Store) HasUncheckedReadings(ctx context.Context, plantID int64) (bool, error) {
+	var exists bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM readings r
+		JOIN devices d ON r.device_id = d.id
+		WHERE d.plant_id = ? AND r.quality = 'unchecked')`, plantID).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("check unchecked readings: %w", err)
+	}
+	return exists, nil
+}
+
 // ListPipelineRuns returns the most recent pipeline runs.
 func (s *Store) ListPipelineRuns(ctx context.Context, plantID *int64, limit int) ([]PipelineRun, error) {
 	if limit <= 0 {
@@ -267,7 +279,7 @@ func (s *Store) GetPlantDeviceSummaries(ctx context.Context, plantID int64) ([]D
 		var total, okCount int
 		var maxPeriodEnd sql.NullString
 		err := s.db.QueryRowContext(ctx, `SELECT COUNT(*),
-			SUM(CASE WHEN quality = 'ok' THEN 1 ELSE 0 END),
+			COALESCE(SUM(CASE WHEN quality = 'ok' THEN 1 ELSE 0 END), 0),
 			MAX(period_end)
 			FROM readings WHERE device_id = ?`, d.ID).Scan(&total, &okCount, &maxPeriodEnd)
 		if err != nil {
@@ -352,12 +364,13 @@ func (s *Store) GetPlantYesterdayStats(ctx context.Context, p domain.Plant, now 
 		stats.HasExpected = true
 	}
 
-	// Local date of last measured reading (no time!)
+	// Local date of the last valid reading (no time!). A dead inverter keeps
+	// reporting zeros, so only quality = ok says when the plant last really measured.
 	var maxStart sql.NullString
 	err = s.db.QueryRowContext(ctx, `SELECT MAX(r.period_start)
 		FROM readings r
 		JOIN devices d ON r.device_id = d.id
-		WHERE d.plant_id = ? AND r.metric = 'energy_kwh' AND r.value IS NOT NULL`, p.ID).Scan(&maxStart)
+		WHERE d.plant_id = ? AND r.metric = 'energy_kwh' AND r.value IS NOT NULL AND r.quality = 'ok'`, p.ID).Scan(&maxStart)
 	if err == nil && maxStart.Valid {
 		if t, err := parseTime(maxStart.String); err == nil {
 			stats.LastMeasuredDate = t.In(loc).Format("02/01/2006")

@@ -15,6 +15,9 @@ import (
 	"github.com/luigiazoreng/solarguard/internal/store"
 )
 
+// maxRangeDays keeps page and chart requests inside the analytics limit of 400 days.
+const maxRangeDays = 399
+
 type NotOKReading struct {
 	Date   string  `json:"date"`
 	Value  float64 `json:"value"`
@@ -103,6 +106,7 @@ func (s *Server) handlePlantDetail(w http.ResponseWriter, r *http.Request) {
 
 	var fromDate, toDate, periodLabel string
 	toDate = yesterday
+	oldestAllowed := now.AddDate(0, 0, -maxRangeDays).Format(time.DateOnly)
 
 	switch period {
 	case "7":
@@ -112,13 +116,18 @@ func (s *Server) handlePlantDetail(w http.ResponseWriter, r *http.Request) {
 		fromDate = now.AddDate(0, 0, -90).Format(time.DateOnly)
 		periodLabel = "Últimos 90 dias"
 	case "all":
-		firstReading, _ := s.store.GetPlantFirstReadingDate(ctx, plantID)
-		if firstReading != "" {
-			fromDate = firstReading
-		} else {
-			fromDate = now.AddDate(0, 0, -365).Format(time.DateOnly)
+		firstReading, err := s.store.GetPlantFirstReadingDate(ctx, plantID)
+		if err != nil {
+			s.cfg.Logger.Error("first reading date", "plant_id", plantID, "err", err)
+			http.Error(w, "Erro ao consultar leituras", http.StatusInternalServerError)
+			return
 		}
+		fromDate = firstReading
 		periodLabel = "Todo o histórico"
+		if firstReading == "" || firstReading < oldestAllowed {
+			fromDate = oldestAllowed
+			periodLabel = fmt.Sprintf("Últimos %d dias", maxRangeDays)
+		}
 	default: // 30
 		period = "30"
 		fromDate = now.AddDate(0, 0, -30).Format(time.DateOnly)
@@ -127,15 +136,23 @@ func (s *Server) handlePlantDetail(w http.ResponseWriter, r *http.Request) {
 
 	// Device filter for metrics
 	var devIDPtr *int64
-	if selectedDevice != "" {
-		if id, err := strconv.ParseInt(selectedDevice, 10, 64); err == nil {
-			devIDPtr = &id
+	for i := range devices {
+		if strconv.FormatInt(devices[i].ID, 10) == selectedDevice {
+			devIDPtr = &devices[i].ID
+			break
 		}
+	}
+	if devIDPtr == nil {
+		selectedDevice = "" // unknown device or from another plant: show the whole plant
 	}
 
 	// Clamp the end of the range for cards to the plant's newest reading date
-	newestReadingDate, _ := s.store.GetPlantNewestReadingDate(ctx, plantID)
-	cardFromDate := fromDate
+	newestReadingDate, err := s.store.GetPlantNewestReadingDate(ctx, plantID)
+	if err != nil {
+		s.cfg.Logger.Error("newest reading date", "plant_id", plantID, "err", err)
+		http.Error(w, "Erro ao consultar leituras", http.StatusInternalServerError)
+		return
+	}
 	cardToDate := toDate
 	var dataUntilStr string
 
@@ -147,15 +164,38 @@ func (s *Server) handlePlantDetail(w http.ResponseWriter, r *http.Request) {
 			dataUntilStr = newestReadingDate
 		}
 	}
-	if cardFromDate > cardToDate {
-		cardFromDate = cardToDate
-	}
+
+	// No reading inside the selected period: the cards say so instead of showing
+	// zeros, which would read as a plant that generated nothing.
+	hasPeriodData := newestReadingDate != "" && fromDate <= cardToDate
 
 	// Compute metrics using single source of truth: internal/analytics
-	genSummary, _ := analytics.Generation(ctx, s.store, plantID, devIDPtr, cardFromDate, cardToDate, "day")
-	evaSummary, _ := analytics.ExpectedVsActual(ctx, s.store, plantID, devIDPtr, cardFromDate, cardToDate)
-	lostSummary, _ := analytics.LostEnergy(ctx, s.store, plantID, cardFromDate, cardToDate)
-	dqSummary, _ := analytics.DataQuality(ctx, s.store, plantID, cardFromDate, cardToDate)
+	var (
+		genSummary  analytics.GenerationSummary
+		evaSummary  analytics.ExpectedVsActualSummary
+		lostSummary analytics.LostEnergySummary
+		dqSummary   analytics.DataQualitySummary
+	)
+	if hasPeriodData {
+		var err error
+		if genSummary, err = analytics.Generation(ctx, s.store, plantID, devIDPtr, fromDate, cardToDate, "day"); err == nil {
+			if evaSummary, err = analytics.ExpectedVsActual(ctx, s.store, plantID, devIDPtr, fromDate, cardToDate); err == nil {
+				if devIDPtr != nil {
+					lostSummary, err = analytics.LostEnergyForDevice(ctx, s.store, plantID, *devIDPtr, fromDate, cardToDate)
+				} else {
+					lostSummary, err = analytics.LostEnergy(ctx, s.store, plantID, fromDate, cardToDate)
+				}
+				if err == nil {
+					dqSummary, err = analytics.DataQuality(ctx, s.store, plantID, fromDate, cardToDate)
+				}
+			}
+		}
+		if err != nil {
+			s.cfg.Logger.Error("plant metrics", "plant_id", plantID, "err", err)
+			http.Error(w, "Erro ao calcular métricas da usina", http.StatusInternalServerError)
+			return
+		}
+	}
 
 	periodMeasured := genSummary.TotalMeasuredKWh
 
@@ -192,7 +232,12 @@ func (s *Server) handlePlantDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Device summaries
-	devSummaries, _ := s.store.GetPlantDeviceSummaries(ctx, plantID)
+	devSummaries, err := s.store.GetPlantDeviceSummaries(ctx, plantID)
+	if err != nil {
+		s.cfg.Logger.Error("device summaries", "plant_id", plantID, "err", err)
+		http.Error(w, "Erro ao listar dispositivos", http.StatusInternalServerError)
+		return
+	}
 
 	// Active model & metrics
 	activeModel, err := s.store.GetActiveModelRun(ctx, plantID)
@@ -238,7 +283,7 @@ func (s *Server) handlePlantDetail(w http.ResponseWriter, r *http.Request) {
 				}
 				if parsed.WalkForward.Pooled.MAE > 0 || parsed.WalkForward.Pooled.RMSE > 0 {
 					modelMetrics = append(modelMetrics, ModelMetricRow{
-						Label: "Geral (Pooled)",
+						Label: "Geral",
 						MAE:   parsed.WalkForward.Pooled.MAE,
 						RMSE:  parsed.WalkForward.Pooled.RMSE,
 						R2:    parsed.WalkForward.Pooled.R2,
@@ -258,6 +303,7 @@ func (s *Server) handlePlantDetail(w http.ResponseWriter, r *http.Request) {
 	data["FromDate"] = fromDate
 	data["ToDate"] = toDate
 	data["DataUntilStr"] = dataUntilStr
+	data["HasPeriodData"] = hasPeriodData
 	data["SelectedDevice"] = selectedDevice
 	data["PeriodMeasured"] = periodMeasured
 	data["HasPaired"] = hasPaired
@@ -330,6 +376,10 @@ func (s *Server) handlePlantSeries(w http.ResponseWriter, r *http.Request) {
 	}
 	if tFrom.After(tTo) {
 		http.Error(w, "Data inicial posterior à data final", http.StatusBadRequest)
+		return
+	}
+	if tTo.Sub(tFrom).Hours()/24 > maxRangeDays {
+		http.Error(w, fmt.Sprintf("Intervalo acima do limite de %d dias", maxRangeDays), http.StatusBadRequest)
 		return
 	}
 

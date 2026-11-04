@@ -67,3 +67,16 @@ func TestMarkdownRendererSafe(t *testing.T) {
 		})
 	}
 }
+
+func TestRenderMarkdown_BlockquoteAndShortDigitLine(t *testing.T) {
+	got := string(web.RenderMarkdown("> Estimativa **baixa** <b>x</b>\n\n2 k\n\n12. item"))
+	for _, want := range []string{
+		"<blockquote>Estimativa <strong>baixa</strong> &lt;b&gt;x&lt;/b&gt;</blockquote>",
+		"<p>2 k</p>",
+		"<ol>\n<li>item</li>",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("expected %q in:\n%s", want, got)
+		}
+	}
+}

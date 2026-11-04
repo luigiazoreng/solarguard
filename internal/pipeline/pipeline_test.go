@@ -189,3 +189,61 @@ func TestPipelineSchedulerAcrossTimeZones(t *testing.T) {
 		t.Errorf("expected Manaus to run once local time >= 02:00, got %v, err=%v", hasAMLater, err)
 	}
 }
+
+// After a restart the collector may store readings once today's run is done.
+// They must not wait until tomorrow to be classified.
+func TestSchedulerRunsAgainForReadingsCollectedAfterTodaysRun(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	plant, dev := setupTestPlant(t, st, "Planta", "SP", "America/Sao_Paulo", -23.5, -46.6)
+	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	sched := pipeline.NewScheduler(st, pipeline.Deps{
+		WeatherProvider: &mockWeatherProvider{},
+		Now:             func() time.Time { return now },
+	})
+
+	runCount := func() int {
+		t.Helper()
+		runs, err := st.ListPipelineRuns(ctx, &plant.ID, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(runs)
+	}
+
+	if err := sched.CheckAndRunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := runCount(); got != 1 {
+		t.Fatalf("runs after first pass: %d, want 1", got)
+	}
+
+	start, end, err := domain.LocalDay("2026-05-09", plant.Timezone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := 20.0
+	if _, err := st.InsertReadings(ctx, []domain.Reading{{
+		DeviceID: dev.ID, Metric: domain.MetricEnergyKWh, PeriodStart: start, PeriodEnd: end, Value: &v, Quality: domain.QualityUnchecked,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := sched.CheckAndRunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := runCount(); got != 2 {
+		t.Errorf("runs after new reading: %d, want 2", got)
+	}
+	unchecked, err := st.HasUncheckedReadings(ctx, plant.ID)
+	if err != nil || unchecked {
+		t.Errorf("reading still unchecked after the second run (err %v)", err)
+	}
+
+	if err := sched.CheckAndRunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := runCount(); got != 2 {
+		t.Errorf("runs with nothing new: %d, want 2", got)
+	}
+}

@@ -47,7 +47,6 @@ type Server struct {
 	handler        http.Handler
 	mcpHandler     http.Handler
 	noAuthRequired bool
-	testCSRFToken  string
 }
 
 type contextKey string
@@ -100,6 +99,7 @@ func NewServer(cfg Config) (*Server, error) {
 		"labelsSeverity":     labels.Severity,
 		"labelsStatus":       labels.Status,
 		"labelsPipelineStep": labels.PipelineStep,
+		"labelsParam":        labels.Param,
 		"printFloat":         func(f float64) string { return fmt.Sprintf("%v", f) },
 		"add":                func(a, b int) int { return a + b },
 		"sub":                func(a, b int) int { return a - b },
@@ -208,14 +208,6 @@ func (s *Server) ActiveSessionCount() int {
 	return s.sm.ActiveSessionCount()
 }
 
-func (s *Server) TestCSRFToken() string {
-	if s.testCSRFToken == "" {
-		sess := s.sm.CreateAnonymousSession()
-		s.testCSRFToken = sess.CSRFToken
-	}
-	return s.testCSRFToken
-}
-
 func (s *Server) routes() {
 	// Static assets
 	subStatic, err := fs.Sub(staticFS, "static")
@@ -255,11 +247,12 @@ func (s *Server) routes() {
 func (s *Server) buildHandlerChain() {
 	h := http.Handler(s.mux)
 
+	// CSRF and Origin check on POST. It reads the session from the request
+	// context, so it must run inside the auth middleware.
+	h = s.csrfMiddleware(h)
+
 	// Auth & session middleware
 	h = s.authMiddleware(h)
-
-	// CSRF and Origin check on POST
-	h = s.csrfMiddleware(h)
 
 	// Security Headers
 	h = s.securityHeaders(h)
@@ -371,9 +364,6 @@ func (s *Server) csrfMiddleware(next http.Handler) http.Handler {
 
 				// Session & CSRF verification
 				sess, _ := r.Context().Value(sessionContextKey).(*Session)
-				if sess == nil && s.testCSRFToken != "" {
-					sess = &Session{CSRFToken: s.testCSRFToken}
-				}
 
 				token := r.PostFormValue("csrf_token")
 				if token == "" {

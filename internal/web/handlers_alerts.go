@@ -178,7 +178,6 @@ func (s *Server) handleAlertDetail(w http.ResponseWriter, r *http.Request) {
 	var evidenceParams map[string]any
 	var detectedOn string
 	var totalValues int
-	var numDays int
 	var firstDate string
 
 	if alert.EvidenceJSON != "" {
@@ -187,7 +186,6 @@ func (s *Server) handleAlertDetail(w http.ResponseWriter, r *http.Request) {
 			Values      []DayValueEvidence `json:"values"`
 			DetectedOn  string             `json:"detected_on"`
 			TotalValues int                `json:"total_values"`
-			NumDays     int                `json:"num_days"`
 			FirstDate   string             `json:"first_date"`
 		}
 		if err := json.Unmarshal([]byte(alert.EvidenceJSON), &ev); err == nil {
@@ -195,7 +193,6 @@ func (s *Server) handleAlertDetail(w http.ResponseWriter, r *http.Request) {
 			evidenceParams = ev.Params
 			detectedOn = ev.DetectedOn
 			totalValues = ev.TotalValues
-			numDays = ev.NumDays
 			firstDate = ev.FirstDate
 		}
 	}
@@ -260,25 +257,20 @@ func (s *Server) handleAlertDetail(w http.ResponseWriter, r *http.Request) {
 	// Details for device_offline
 	isDeviceOffline := alert.Rule == "device_offline"
 	lastContactStr := "-"
-	daysOffline := numDays
+	// Whole days elapsed since the last contact. num_days in the evidence counts
+	// calendar dates inclusively, which overstates the silence by up to a day.
+	daysOffline := 0
 	if isDeviceOffline {
+		var lastContact time.Time
 		if devPtr != nil && devPtr.LastSeenAt != nil {
-			lastContactStr = devPtr.LastSeenAt.In(loc).Format("02/01/2006 15:04")
-		} else if firstDate != "" {
-			if t, err := time.Parse(time.DateOnly, firstDate); err == nil {
-				lastContactStr = t.Format("02/01/2006")
-			} else {
-				lastContactStr = firstDate
-			}
+			lastContact = *devPtr.LastSeenAt
+			lastContactStr = lastContact.In(loc).Format("02/01/2006 15:04")
+		} else if t, err := time.ParseInLocation(time.DateOnly, firstDate, loc); err == nil {
+			lastContact = t
+			lastContactStr = t.Format("02/01/2006")
 		}
-		if daysOffline <= 0 && firstDate != "" {
-			tFirst, err := time.Parse(time.DateOnly, firstDate)
-			if err == nil {
-				daysOffline = int(s.cfg.Now().In(loc).Sub(tFirst).Hours()/24) + 1
-			}
-		}
-		if daysOffline <= 0 {
-			daysOffline = 1
+		if !lastContact.IsZero() {
+			daysOffline = int(s.cfg.Now().Sub(lastContact).Hours() / 24)
 		}
 	}
 

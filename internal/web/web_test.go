@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +23,50 @@ import (
 	"github.com/luigiazoreng/solarguard/internal/web"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+var csrfFieldRE = regexp.MustCompile(`name="csrf_token" value="([^"]+)"`)
+
+// sessionClient opens the page like a browser and returns a client holding the
+// session cookie, plus the CSRF token that the page really rendered.
+func sessionClient(t *testing.T, baseURL string) (*http.Client, string) {
+	t.Helper()
+	client, err := newJarClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return client, pageCSRFToken(t, client, baseURL)
+}
+
+func newJarClient() (*http.Client, error) {
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		return nil, err
+	}
+	return &http.Client{
+		Jar: jar,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}, nil
+}
+
+func pageCSRFToken(t *testing.T, client *http.Client, baseURL string) string {
+	t.Helper()
+	resp, err := client.Get(baseURL + "/manage")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := csrfFieldRE.FindSubmatch(body)
+	if m == nil {
+		t.Fatalf("/manage rendered no csrf_token field (status %d)", resp.StatusCode)
+	}
+	return string(m[1])
+}
 
 func newWebTestStore(t *testing.T) *store.Store {
 	t.Helper()
@@ -618,7 +663,6 @@ func TestAlerts_AckAndResolveUpdateStatusKeepNote(t *testing.T) {
 	srv, _ := web.NewServer(cfg)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
-	client := ts.Client()
 
 	plant, d1, _ := seedPlantWithDevices(t, st, "P1", "Planta 1")
 	alert := store.Alert{
@@ -636,7 +680,7 @@ func TestAlerts_AckAndResolveUpdateStatusKeepNote(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	csrfToken := srv.TestCSRFToken()
+	client, csrfToken := sessionClient(t, ts.URL)
 
 	// Ack alert with note
 	ackForm := url.Values{
@@ -1025,13 +1069,7 @@ func TestManage_KeepCurrentOnEmptyAndCommaNumbers(t *testing.T) {
 	}
 
 	// First GET to establish session and get CSRF token
-	respGet, err := client.Get(ts.URL + "/manage")
-	if err != nil {
-		t.Fatal(err)
-	}
-	respGet.Body.Close()
-
-	csrfToken := srv.TestCSRFToken()
+	csrfToken := pageCSRFToken(t, client, ts.URL)
 
 	// 1. POST with empty area must keep stored area (42.0)
 	formEmpty := url.Values{

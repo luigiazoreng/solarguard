@@ -81,6 +81,12 @@ func splitTableCells(line string) []string {
 	return cells
 }
 
+// isOrderedItem reports whether a line starts like "1. " or "12. ".
+func isOrderedItem(line string) bool {
+	dot := strings.Index(line, ". ")
+	return dot > 0 && dot <= 3 && line[0] >= '0' && line[0] <= '9'
+}
+
 // RenderMarkdown safely converts a markdown string into template.HTML.
 // Raw HTML is escaped first and never passed through. Links with unsafe schemes are rejected.
 func RenderMarkdown(input string) template.HTML {
@@ -159,7 +165,7 @@ func RenderMarkdown(input string) template.HTML {
 		}
 
 		// Ordered list
-		if len(trimmed) > 2 && trimmed[0] >= '0' && trimmed[0] <= '9' && (strings.Contains(trimmed[:4], ". ")) {
+		if isOrderedItem(trimmed) {
 			out.WriteString("<ol>\n")
 			for i < n {
 				cur := strings.TrimSpace(lines[i])
@@ -179,11 +185,26 @@ func RenderMarkdown(input string) template.HTML {
 			continue
 		}
 
+		// Blockquote
+		if strings.HasPrefix(trimmed, ">") {
+			var quote []string
+			for i < n {
+				cur := strings.TrimSpace(lines[i])
+				if !strings.HasPrefix(cur, ">") {
+					break
+				}
+				quote = append(quote, html.EscapeString(strings.TrimSpace(cur[1:])))
+				i++
+			}
+			out.WriteString("<blockquote>" + renderInlines(strings.Join(quote, " ")) + "</blockquote>\n")
+			continue
+		}
+
 		// Paragraph
 		var pLines []string
 		for i < n {
 			cur := strings.TrimSpace(lines[i])
-			if cur == "" || strings.HasPrefix(cur, "#") || strings.HasPrefix(cur, "- ") ||
+			if cur == "" || strings.HasPrefix(cur, "#") || strings.HasPrefix(cur, ">") || strings.HasPrefix(cur, "- ") ||
 				strings.HasPrefix(cur, "* ") || (strings.Contains(cur, "|") && i+1 < n && isTableSeparator(lines[i+1])) {
 				break
 			}

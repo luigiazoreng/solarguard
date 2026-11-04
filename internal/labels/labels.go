@@ -65,6 +65,27 @@ var pipelineStepLabels = map[string]string{
 	"alerts":           "alertas",
 }
 
+var paramLabels = map[string]string{
+	"baseline":           "dias da referência",
+	"critical_days":      "dias até ficar crítico",
+	"drop":               "queda mínima",
+	"max_gap_days":       "maior intervalo sem dados (dias)",
+	"min_baseline_days":  "mínimo de dias na referência",
+	"min_days":           "mínimo de dias",
+	"min_expected_kwh":   "mínimo esperado (kWh)",
+	"ratio":              "razão mínima em relação ao esperado",
+	"resolve_after_days": "dias normais para resolver",
+	"window":             "dias da janela",
+}
+
+// Param returns the friendly Portuguese label for an alert rule parameter.
+func Param(name string) string {
+	if label, ok := paramLabels[name]; ok {
+		return label
+	}
+	return escape(name)
+}
+
 func escape(s string) string {
 	return html.EscapeString(strings.TrimSpace(s))
 }

@@ -227,8 +227,10 @@
 <!-- 5. Configuração de Regras de Alerta por Usina -->
 <div style="margin-bottom:32px;">
   <h2 style="font-size:1.25rem;margin-bottom:8px;">Parâmetros das Regras de Alerta</h2>
-  <p style="color:var(--text-muted);font-size:0.875rem;margin-bottom:12px;">Ative ou desative regras e defina limites por usina em formato JSON.</p>
+  <p style="color:var(--text-muted);font-size:0.875rem;margin-bottom:12px;">Ative ou desative regras e defina limites por usina em formato JSON. Com <code>{}</code>, a regra usa os valores padrão.</p>
 
+  <details>
+  <summary style="cursor:pointer;font-weight:500;color:var(--primary);margin-bottom:12px;">Mostrar regras de todas as usinas</summary>
   <div class="table-container">
     <table>
       <thead>
@@ -268,5 +270,6 @@
       </tbody>
     </table>
   </div>
+  </details>
 </div>
 {{end}}

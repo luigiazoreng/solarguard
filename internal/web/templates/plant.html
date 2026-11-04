@@ -22,7 +22,7 @@
 <form method="GET" action="/plants/{{.Plant.ID}}" class="filters-bar">
   <div>
     <label for="period" style="display:block;font-size:0.8rem;color:var(--text-muted);margin-bottom:4px;">Período</label>
-    <select id="period" name="period" class="form-control" onchange="this.form.submit()">
+    <select id="period" name="period" class="form-control" data-autosubmit>
       <option value="7" {{if eq .Period "7"}}selected{{end}}>Últimos 7 dias</option>
       <option value="30" {{if eq .Period "30"}}selected{{end}}>Últimos 30 dias</option>
       <option value="90" {{if eq .Period "90"}}selected{{end}}>Últimos 90 dias</option>
@@ -31,7 +31,7 @@
   </div>
   <div>
     <label for="device" style="display:block;font-size:0.8rem;color:var(--text-muted);margin-bottom:4px;">Dispositivo</label>
-    <select id="device" name="device" class="form-control" onchange="this.form.submit()">
+    <select id="device" name="device" class="form-control" data-autosubmit>
       <option value="" {{if eq .SelectedDevice ""}}selected{{end}}>Todos os dispositivos</option>
       {{range .Devices}}
       <option value="{{.ID}}" {{if eq $.SelectedDevice (printf "%d" .ID)}}selected{{end}}>{{.Name}} ({{.ExternalID}})</option>
@@ -44,7 +44,11 @@
 <div class="grid">
   <div class="card">
     <div class="card-title">Energia Medida</div>
+    {{if .HasPeriodData}}
     <div class="card-value">{{formatFloat .PeriodMeasured 1}} <span style="font-size:0.9rem;font-weight:normal;">kWh</span></div>
+    {{else}}
+    <div class="card-value">-</div>
+    {{end}}
     <div class="card-sub">{{.PeriodLabel}}{{if .DataUntilStr}} • <span class="badge badge-neutral" style="font-size:0.75rem;">Dados até {{.DataUntilStr}}</span>{{end}}</div>
   </div>
   <div class="card">
@@ -59,13 +63,23 @@
   </div>
   <div class="card">
     <div class="card-title">Energia esperada sem medição válida</div>
+    {{if .HasPeriodData}}
     <div class="card-value" style="color:var(--warning);">{{formatFloat .PeriodLostEnergy 1}} <span style="font-size:0.9rem;font-weight:normal;">kWh</span></div>
     <div class="card-sub">Estimativa: pode ter sido gerada e não registrada.</div>
+    {{else}}
+    <div class="card-value">-</div>
+    <div class="card-sub">sem leituras no período</div>
+    {{end}}
   </div>
   <div class="card">
     <div class="card-title">Qualidade dos Dados</div>
+    {{if .HasPeriodData}}
     <div class="card-value">{{formatPercent .PeriodQualityPct}}</div>
     <div class="card-sub">{{.PeriodOKReadings}} de {{.PeriodTotalReadings}} {{if eq .TotalDevices 1}}dias válidos{{else}}dias-dispositivo válidos{{end}}</div>
+    {{else}}
+    <div class="card-value">-</div>
+    <div class="card-sub">sem leituras no período</div>
+    {{end}}
   </div>
 </div>
 
