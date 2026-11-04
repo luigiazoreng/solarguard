@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -133,7 +134,10 @@ func runCollect(ctx context.Context, args []string) error {
 	}()
 
 	logger.Printf("iniciando coletor para fonte %q...", src.Name)
-	return runner.Run(ctx)
+	if err := runner.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		return err
+	}
+	return nil
 }
 
 func runQueue(ctx context.Context, args []string) error {

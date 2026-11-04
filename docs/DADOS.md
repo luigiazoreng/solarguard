@@ -13,7 +13,7 @@ O rótulo `KW` está errado.
 ## Falhas conhecidas (datas conforme o carimbo da planilha)
 
 - Dispositivo TOA travado em 18,11 de 2026-02-17 a 2026-06-22 (121 leituras), depois zero de 2026-06-23 a 2026-08-01.
-- Picos de cerca de 8 a 9 milhões: 2026-05-22 TOC, 2026-08-11 TOC e TOB, 2026-08-26 TOA, 2026-09-23 TOC.
+- Picos de cerca de 8 a 9 milhões: 2026-05-22 TOC, 2026-08-11 TOC e TOB, 2026-08-26 TOA, 2026-09-23 TOC. Divididos por 1.000.000, todos ficam alinhados com os outros dispositivos do dia (por exemplo, 8,07 kWh contra 8,11 e 8,01), o que indica erro de escala, e não leitura corrompida. Seguem marcados como inválidos, porque essa regra ainda é uma inferência.
 
 ## Defasagem de um dia (confirmada)
 
