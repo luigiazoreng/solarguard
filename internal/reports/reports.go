@@ -77,7 +77,7 @@ func GenerateWithTime(ctx context.Context, st *store.Store, req Request, now tim
 
 	lostSummary, err := analytics.LostEnergy(ctx, st, plant.ID, req.From, req.To)
 	if err != nil {
-		return store.Report{}, fmt.Errorf("calcular energia perdida: %w", err)
+		return store.Report{}, fmt.Errorf("calcular energia sem medição válida: %w", err)
 	}
 
 	dqSummary, err := analytics.DataQuality(ctx, st, plant.ID, req.From, req.To)
@@ -199,10 +199,10 @@ func renderMarkdown(sb *strings.Builder, escapedPlantName string, plant domain.P
 	if !hasValidDays {
 		sb.WriteString("Nenhum dado de medição válida disponível no período avaliado.\n\n")
 		if lostSummary.LostEnergyKWh > 0 {
-			sb.WriteString(fmt.Sprintf("- **Energia estimada perdida:** %s\n\n", formatKWh(lostSummary.LostEnergyKWh)))
+			sb.WriteString(fmt.Sprintf("- **Energia esperada sem medição válida:** %s\n\n", formatKWh(lostSummary.LostEnergyKWh)))
 		}
 		if lostSummary.DeviceDaysAffected > 0 {
-			sb.WriteString(fmt.Sprintf("> Estimativa cobre %d de %d dias-dispositivo com problema; os demais não têm geração esperada.\n\n",
+			sb.WriteString(fmt.Sprintf("> Estimativa baseada na geração esperada de %d de %d dias-dispositivo sem leitura válida. Essa energia pode ter sido gerada e não registrada, então não é necessariamente uma perda.\n\n",
 				lostSummary.DeviceDaysWithExpected, lostSummary.DeviceDaysAffected))
 		}
 	} else {
@@ -237,10 +237,10 @@ func renderMarkdown(sb *strings.Builder, escapedPlantName string, plant domain.P
 		sb.WriteString(fmt.Sprintf("| Geração medida | %s |\n", formatKWh(expVsAct.TotalMeasuredKWh)))
 		sb.WriteString(fmt.Sprintf("| Medida x esperada (%d dias-dispositivo com ambos) | %s |\n",
 			expVsAct.PairedDeviceDays, pairedComparisonStr))
-		sb.WriteString(fmt.Sprintf("| Energia estimada perdida | %s |\n\n", formatKWh(lostSummary.LostEnergyKWh)))
+		sb.WriteString(fmt.Sprintf("| Energia esperada sem medição válida | %s |\n\n", formatKWh(lostSummary.LostEnergyKWh)))
 
 		if lostSummary.DeviceDaysAffected > 0 {
-			sb.WriteString(fmt.Sprintf("> Estimativa cobre %d de %d dias-dispositivo com problema; os demais não têm geração esperada.\n\n",
+			sb.WriteString(fmt.Sprintf("> Estimativa baseada na geração esperada de %d de %d dias-dispositivo sem leitura válida. Essa energia pode ter sido gerada e não registrada, então não é necessariamente uma perda.\n\n",
 				lostSummary.DeviceDaysWithExpected, lostSummary.DeviceDaysAffected))
 		}
 	}

@@ -774,7 +774,7 @@ func RegisterAllTools(s *mcp.Server, st *store.Store) {
 	// 5. get_lost_energy
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "get_lost_energy",
-		Description: "Calcula a estimativa de energia perdida (kWh) pela soma da geração esperada nos dias-dispositivo com dados ausentes ou inválidos.",
+		Description: "Soma a geração esperada nos dias-dispositivo sem medição válida (kWh). É uma estimativa: a energia pode ter sido gerada e não registrada, então não é necessariamente uma perda.",
 		Annotations: readOnlyAnnotation(),
 	}, handleGetLostEnergy(st))
 

@@ -624,7 +624,7 @@ func LostEnergy(ctx context.Context, st *store.Store, plantID int64, from, to st
 		DeviceDaysWithoutExpected: deviceDaysWithoutExpected,
 		TotalDeviceDays:           len(devices) * len(dates),
 		IsEstimate:                true,
-		Label:                     "Estimativa baseada no modelo ativo de geração esperada",
+		Label:                     "Estimativa pelo modelo ativo: a energia pode ter sido gerada e não registrada",
 	}, nil
 }
 

@@ -44,7 +44,7 @@ func RegisterAllPrompts(s *mcp.Server, st *store.Store) {
 1. **Coleta de dados via ferramentas MCP**:
    - Utilize 'get_plant' para conhecer a usina e seus inversores/dispositivos.
    - Utilize 'get_generation' e 'get_expected_vs_actual' para avaliar a geração medida e a esperada nos dias válidos.
-   - Utilize 'get_lost_energy' para obter a estimativa de energia perdida.
+   - Utilize 'get_lost_energy' para obter a energia esperada em dias sem medição válida. Ela pode ter sido gerada e não registrada: nunca a descreva como perda confirmada.
    - Utilize 'get_data_quality' para verificar a integridade das leituras por dispositivo.
    - Utilize 'compare_devices' para a comparação justa entre dispositivos da usina nos dias simultaneamente válidos.
    - Utilize 'list_alerts' para levantar os incidentes ocorridos no período.
