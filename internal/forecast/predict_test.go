@@ -185,6 +185,8 @@ func TestNoPredictionBeforeEnoughHistory(t *testing.T) {
 
 // 2. Failed days have no expected value.
 // A device with a long invalid run gets values for all those days once it has enough history.
+// Specifically, a device with between 30 and 59 ok rows before failure (e.g. 45 ok rows)
+// gets expected values for failure days with MinRowsForFailureDayExpected = 30.
 func TestExpectedExistsDuringFailurePeriod(t *testing.T) {
 	ctx := context.Background()
 	st := setupTestDB(t)
@@ -200,10 +202,19 @@ func TestExpectedExistsDuringFailurePeriod(t *testing.T) {
 		Timezone:          "America/Sao_Paulo",
 		WeatherLocationID: &wloc.ID,
 	})
-	dev, _ := st.UpsertDevice(ctx, domain.Device{
+	// D1 has 45 ok rows (between 30 and 59) followed by 25 failure days
+	dev1, _ := st.UpsertDevice(ctx, domain.Device{
 		PlantID:     plant.ID,
 		ExternalID:  "D1",
 		Name:        "D1",
+		PanelAreaM2: &area,
+		Efficiency:  &eff,
+	})
+	// D2 has 80 ok rows so Backtest evaluates walk-forward and selects an active model for the plant
+	dev2, _ := st.UpsertDevice(ctx, domain.Device{
+		PlantID:     plant.ID,
+		ExternalID:  "D2",
+		Name:        "D2",
 		PanelAreaM2: &area,
 		Efficiency:  &eff,
 	})
@@ -211,11 +222,10 @@ func TestExpectedExistsDuringFailurePeriod(t *testing.T) {
 	loc, _ := time.LoadLocation("America/Sao_Paulo")
 	startDate := time.Date(2026, 1, 1, 0, 0, 0, 0, loc)
 
-	// Seed 70 ok days (Day 0..69) followed by 20 invalid days (Day 70..89)
 	var weatherDays []connector.WeatherDay
 	var readings []domain.Reading
 
-	for i := 0; i < 90; i++ {
+	for i := 0; i < 80; i++ {
 		curDate := startDate.AddDate(0, 0, i)
 		dateStr := curDate.Format(time.DateOnly)
 
@@ -230,33 +240,51 @@ func TestExpectedExistsDuringFailurePeriod(t *testing.T) {
 		startUTC := curDate.UTC()
 		endUTC := curDate.AddDate(0, 0, 1).UTC()
 
-		val := 8.0 * irr
-		q := domain.QualityOK
-		reason := "ok"
-		if i >= 70 {
-			val = 0.0
-			q = domain.QualityInvalid
-			reason = "stuck_zero"
-		}
-
+		// D2 has ok readings for all 80 days
+		valD2 := 8.0 * irr
 		readings = append(readings, domain.Reading{
-			DeviceID:      dev.ID,
+			DeviceID:      dev2.ID,
 			Metric:        domain.MetricEnergyKWh,
 			PeriodStart:   startUTC,
 			PeriodEnd:     endUTC,
-			Value:         &val,
-			RawValue:      fmt.Sprintf("%.2f", val),
-			Quality:       q,
-			QualityReason: reason,
+			Value:         &valD2,
+			RawValue:      fmt.Sprintf("%.2f", valD2),
+			Quality:       domain.QualityOK,
+			QualityReason: "ok",
 		})
+
+		// D1 has 45 ok days (Day 0..44) followed by 25 invalid days (Day 45..69)
+		if i < 70 {
+			valD1 := 8.0 * irr
+			qD1 := domain.QualityOK
+			reasonD1 := "ok"
+			if i >= 45 {
+				valD1 = 0.0
+				qD1 = domain.QualityInvalid
+				reasonD1 = "stuck_zero"
+			}
+			readings = append(readings, domain.Reading{
+				DeviceID:      dev1.ID,
+				Metric:        domain.MetricEnergyKWh,
+				PeriodStart:   startUTC,
+				PeriodEnd:     endUTC,
+				Value:         &valD1,
+				RawValue:      fmt.Sprintf("%.2f", valD1),
+				Quality:       qD1,
+				QualityReason: reasonD1,
+			})
+		}
 	}
 
 	_ = st.UpsertWeatherDays(ctx, wloc.ID, "observed", "inmet", weatherDays)
 	_, _ = st.InsertReadings(ctx, readings)
 
-	_, err := forecast.Backtest(ctx, st, plant.ID, forecast.BacktestOpts{MinTrainDays: 60, RefitDays: 7})
+	btRes, err := forecast.Backtest(ctx, st, plant.ID, forecast.BacktestOpts{MinTrainDays: 60, RefitDays: 7})
 	if err != nil {
 		t.Fatalf("backtest: %v", err)
+	}
+	if btRes.ActiveModel == "" {
+		t.Fatalf("expected plant to have active model selected via D2")
 	}
 
 	predRes, err := forecast.Predict(ctx, st, plant.ID, forecast.PredictOpts{Days: 7})
@@ -264,21 +292,31 @@ func TestExpectedExistsDuringFailurePeriod(t *testing.T) {
 		t.Fatalf("predict: %v", err)
 	}
 
-	// Days 70 through 89 MUST have predictions!
-	for i := 70; i < 90; i++ {
+	// D1 has 45 ok rows (< 60), so D1 must have NO prediction for its first 45 ok days (item 1)
+	for i := 0; i < 45; i++ {
+		dateStr := startDate.AddDate(0, 0, i).Format(time.DateOnly)
+		for _, p := range predRes.Predictions {
+			if p.DeviceID == dev1.ID && p.Date == dateStr {
+				t.Fatalf("D1 before enough history (day %s) should NOT have prediction, got %f", dateStr, p.KWhExpected)
+			}
+		}
+	}
+
+	// But D1 failure days 45 through 69 (25 days) MUST have predictions, because 45 >= MinRowsForFailureDayExpected (30)!
+	for i := 45; i < 70; i++ {
 		dateStr := startDate.AddDate(0, 0, i).Format(time.DateOnly)
 		found := false
 		for _, p := range predRes.Predictions {
-			if p.Date == dateStr && p.DeviceID == dev.ID {
+			if p.DeviceID == dev1.ID && p.Date == dateStr {
 				found = true
 				if p.KWhExpected <= 0 {
-					t.Errorf("expected positive expected kWh for failure day %s, got %f", dateStr, p.KWhExpected)
+					t.Errorf("expected positive expected kWh for failure day %s on D1, got %f", dateStr, p.KWhExpected)
 				}
 				break
 			}
 		}
 		if !found {
-			t.Fatalf("missing expected value for failure date %s", dateStr)
+			t.Fatalf("missing expected value for failure date %s on D1 (had 45 prior ok rows >= %d)", dateStr, forecast.MinRowsForFailureDayExpected)
 		}
 	}
 }

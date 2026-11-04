@@ -15,6 +15,10 @@ import (
 	"github.com/luigiazoreng/solarguard/internal/store"
 )
 
+// MinRowsForFailureDayExpected is the minimum number of prior ok rows required
+// to compute an expected value on dates without an ok reading (e.g. failure days).
+const MinRowsForFailureDayExpected = 30
+
 // PredictOpts configures prediction generation.
 type PredictOpts struct {
 	Days int // default 7
@@ -222,8 +226,8 @@ func Predict(ctx context.Context, st *store.Store, plantID int64, opts PredictOp
 			prevKWh = &currVal
 		}
 
-		if len(okRows) < minTrainDays {
-			messages = append(messages, fmt.Sprintf("dispositivo %s possui histórico insuficiente (%d < %d)", d.Name, len(okRows), minTrainDays))
+		if len(okRows) < MinRowsForFailureDayExpected {
+			messages = append(messages, fmt.Sprintf("dispositivo %s possui histórico insuficiente (%d < %d)", d.Name, len(okRows), MinRowsForFailureDayExpected))
 			continue
 		}
 
@@ -237,6 +241,28 @@ func Predict(ctx context.Context, st *store.Store, plantID int64, opts PredictOp
 		if rmse == 0 && btRes != nil {
 			rmse = btRes.DeviceResidualRMSE[d.Name]
 		}
+		if rmse == 0 {
+			var sse float64
+			var count int
+			for _, r := range okRows {
+				p, err := fullModel.Predict(DayFeatures{
+					Date:          r.Date,
+					Irradiation:   r.Irradiation,
+					TempMean:      r.TempMean,
+					Precipitation: r.Precipitation,
+					Humidity:      r.Humidity,
+					PrevKWh:       r.PrevKWh,
+				})
+				if err == nil {
+					diff := r.KWh - p
+					sse += diff * diff
+					count++
+				}
+			}
+			if count > 0 {
+				rmse = math.Sqrt(sse / float64(count))
+			}
+		}
 
 		validDevs = append(validDevs, validDevInfo{
 			dev:    d,
@@ -246,18 +272,44 @@ func Predict(ctx context.Context, st *store.Store, plantID int64, opts PredictOp
 		})
 
 		// For every date from the first date with enough history through the latest date with observed weather:
-		// Required: strictly at least minTrainDays prior ok rows before date D.
+		// - On ok dates: require strictly >= minTrainDays (60) prior ok rows; use honest walk-forward out-of-fold value.
+		// - On dates WITHOUT an ok reading (not ok or missing): require strictly >= MinRowsForFailureDayExpected (30) prior ok rows.
 		wfDevPreds := btRes.DeviceDayPredictions[d.Name]
 
-		// Pre-index okRows by date for binary search / counting
+		// Pre-index okRows by date for counting prior ok rows
 		for _, targetDate := range observedDates {
 			// Count how many ok rows have Date < targetDate
 			priorCount := sort.Search(len(okRows), func(i int) bool {
 				return okRows[i].Date >= targetDate
 			})
-			if priorCount < minTrainDays {
-				// No row: before walk-forward starts / not enough history
-				continue
+
+			_, isOK := readingMap[targetDate]
+			if isOK {
+				if priorCount < minTrainDays {
+					// In-sample / before walk-forward starts: NO prediction row
+					continue
+				}
+				if wfMap, ok := wfDevPreds[targetDate]; ok && wfMap != nil {
+					if wfVal, ok := wfMap[activeRun.Name]; ok {
+						lower := math.Max(0.0, wfVal-1.645*rmse)
+						upper := math.Max(0.0, wfVal+1.645*rmse)
+						allPreds = append(allPreds, store.Prediction{
+							DeviceID:    d.ID,
+							Date:        targetDate,
+							ModelRunID:  activeRun.ID,
+							KWhExpected: wfVal,
+							KWhLower:    &lower,
+							KWhUpper:    &upper,
+							CreatedAt:   nowTime,
+						})
+						continue
+					}
+				}
+			} else {
+				// Dates WITHOUT an ok reading only require at least MinRowsForFailureDayExpected (30)
+				if priorCount < MinRowsForFailureDayExpected {
+					continue
+				}
 			}
 
 			w := weatherMap[targetDate]
@@ -269,29 +321,7 @@ func Predict(ctx context.Context, st *store.Store, plantID int64, opts PredictOp
 				Humidity:      w.Humidity,
 			}
 
-			var expected float64
-
-			// On ok dates that were evaluated in walk-forward, keep using the honest walk-forward out-of-fold value
-			if wfMap, ok := wfDevPreds[targetDate]; ok && wfMap != nil {
-				if wfVal, ok := wfMap[activeRun.Name]; ok {
-					expected = wfVal
-					lower := math.Max(0.0, expected-1.645*rmse)
-					upper := math.Max(0.0, expected+1.645*rmse)
-					allPreds = append(allPreds, store.Prediction{
-						DeviceID:    d.ID,
-						Date:        targetDate,
-						ModelRunID:  activeRun.ID,
-						KWhExpected: expected,
-						KWhLower:    &lower,
-						KWhUpper:    &upper,
-						CreatedAt:   nowTime,
-					})
-					continue
-				}
-			}
-
-			// On any other date (reading not ok, or no reading):
-			// fit active model on that device's ok rows strictly before targetDate (requires >= minTrainDays)
+			// Fit active model strictly on ok rows before targetDate
 			priorRows := okRows[:priorCount]
 			m, err := newModelForDevice(d)
 			if err != nil {
@@ -304,17 +334,16 @@ func Predict(ctx context.Context, st *store.Store, plantID int64, opts PredictOp
 			if err != nil {
 				continue
 			}
-			expected = p
 
 			// Approximate 90% prediction band (+/- 1.645 * RMSE)
-			lower := math.Max(0.0, expected-1.645*rmse)
-			upper := math.Max(0.0, expected+1.645*rmse)
+			lower := math.Max(0.0, p-1.645*rmse)
+			upper := math.Max(0.0, p+1.645*rmse)
 
 			allPreds = append(allPreds, store.Prediction{
 				DeviceID:    d.ID,
 				Date:        targetDate,
 				ModelRunID:  activeRun.ID,
-				KWhExpected: expected,
+				KWhExpected: p,
 				KWhLower:    &lower,
 				KWhUpper:    &upper,
 				CreatedAt:   nowTime,
