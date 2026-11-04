@@ -2,6 +2,7 @@ package quality_test
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -329,14 +330,14 @@ func TestRules5And6And7ZeroHandling(t *testing.T) {
 	t.Run("ZeroNoPeerEvidenceDueToTooFewPeers", func(t *testing.T) {
 		st, src := newTestStore(t)
 		p, _ := st.UpsertPlant(ctx, domain.Plant{SourceID: src.ID, ExternalID: "P1", Name: "P1", Timezone: "America/Sao_Paulo"})
-		// Plant with only 2 devices (so each device has only 1 peer)
+		// Plant with only 2 devices where peer generates <= 1 kWh
 		d1, _ := st.UpsertDevice(ctx, domain.Device{PlantID: p.ID, ExternalID: "D1", Name: "D1", PanelAreaM2: floatPtr(50), Efficiency: floatPtr(0.2)})
 		d2, _ := st.UpsertDevice(ctx, domain.Device{PlantID: p.ID, ExternalID: "D2", Name: "D2", PanelAreaM2: floatPtr(50), Efficiency: floatPtr(0.2)})
 
 		s, e := localDayHelper("2026-07-02")
 		st.InsertReadings(ctx, []domain.Reading{
 			{DeviceID: d1.ID, Metric: domain.MetricEnergyKWh, PeriodStart: s, PeriodEnd: e, Value: floatPtr(0.0), RawValue: "0"},
-			{DeviceID: d2.ID, Metric: domain.MetricEnergyKWh, PeriodStart: s, PeriodEnd: e, Value: floatPtr(25.0), RawValue: "25"},
+			{DeviceID: d2.ID, Metric: domain.MetricEnergyKWh, PeriodStart: s, PeriodEnd: e, Value: floatPtr(0.5), RawValue: "0.5"},
 		})
 
 		summary, err := quality.Classify(ctx, st, p.ID, time.Time{}, time.Time{})
@@ -376,7 +377,7 @@ func TestRules5And6And7ZeroHandling(t *testing.T) {
 		}
 	})
 
-	t.Run("BlackoutDayAllZeroIsOK", func(t *testing.T) {
+	t.Run("BlackoutDayAllZeroIsSuspect", func(t *testing.T) {
 		st, src := newTestStore(t)
 		p, _ := st.UpsertPlant(ctx, domain.Plant{SourceID: src.ID, ExternalID: "P1", Name: "P1", Timezone: "America/Sao_Paulo"})
 		d1, _ := st.UpsertDevice(ctx, domain.Device{PlantID: p.ID, ExternalID: "D1", Name: "D1", PanelAreaM2: floatPtr(50), Efficiency: floatPtr(0.2)})
@@ -384,7 +385,7 @@ func TestRules5And6And7ZeroHandling(t *testing.T) {
 		d3, _ := st.UpsertDevice(ctx, domain.Device{PlantID: p.ID, ExternalID: "D3", Name: "D3", PanelAreaM2: floatPtr(50), Efficiency: floatPtr(0.2)})
 
 		s, e := localDayHelper("2026-07-04")
-		// All 3 towers report 0.0 kWh (peers are available and agree generation is 0)
+		// All 3 towers report 0.0 kWh -> suspect (zero_no_peer_evidence), never ok!
 		st.InsertReadings(ctx, []domain.Reading{
 			{DeviceID: d1.ID, Metric: domain.MetricEnergyKWh, PeriodStart: s, PeriodEnd: e, Value: floatPtr(0.0), RawValue: "0"},
 			{DeviceID: d2.ID, Metric: domain.MetricEnergyKWh, PeriodStart: s, PeriodEnd: e, Value: floatPtr(0.0), RawValue: "0"},
@@ -395,8 +396,14 @@ func TestRules5And6And7ZeroHandling(t *testing.T) {
 		if err != nil {
 			t.Fatalf("classify: %v", err)
 		}
-		if summary.CountsByQuality[domain.QualityOK] != 3 {
-			t.Errorf("expected 3 OK on blackout day with agreeing peers, got %d", summary.CountsByQuality[domain.QualityOK])
+		if summary.CountsByQuality[domain.QualityOK] != 0 {
+			t.Errorf("expected 0 OK on blackout day, got %d", summary.CountsByQuality[domain.QualityOK])
+		}
+		if summary.CountsByQuality[domain.QualitySuspect] != 3 {
+			t.Errorf("expected 3 Suspect on blackout day, got %d", summary.CountsByQuality[domain.QualitySuspect])
+		}
+		if summary.CountsByReason["zero_no_peer_evidence"] != 3 {
+			t.Errorf("expected 3 zero_no_peer_evidence on blackout day, got %d", summary.CountsByReason["zero_no_peer_evidence"])
 		}
 	})
 }
@@ -505,5 +512,286 @@ func TestPlantIsolation(t *testing.T) {
 	}
 	if sumB.CountsByReason["stuck_value"] != 0 {
 		t.Errorf("plant B: expected 0 stuck_value, got %d", sumB.CountsByReason["stuck_value"])
+	}
+}
+
+// TestZeroNextToOneGeneratingPeerIsInvalid verifies:
+// 3 devices, one peer at 0 and one at 38 -> the zero is invalid (zero_with_peers_generating).
+func TestZeroNextToOneGeneratingPeerIsInvalid(t *testing.T) {
+	ctx := context.Background()
+	st, src := newTestStore(t)
+	p, _ := st.UpsertPlant(ctx, domain.Plant{SourceID: src.ID, ExternalID: "P1", Name: "P1", Timezone: "America/Sao_Paulo"})
+	d1, _ := st.UpsertDevice(ctx, domain.Device{PlantID: p.ID, ExternalID: "D1", Name: "D1", PanelAreaM2: floatPtr(50), Efficiency: floatPtr(0.2)})
+	d2, _ := st.UpsertDevice(ctx, domain.Device{PlantID: p.ID, ExternalID: "D2", Name: "D2", PanelAreaM2: floatPtr(50), Efficiency: floatPtr(0.2)})
+	d3, _ := st.UpsertDevice(ctx, domain.Device{PlantID: p.ID, ExternalID: "D3", Name: "D3", PanelAreaM2: floatPtr(50), Efficiency: floatPtr(0.2)})
+
+	s, e := localDayHelper("2026-07-01")
+	// D1 at 0, D2 at 0, D3 at 38
+	st.InsertReadings(ctx, []domain.Reading{
+		{DeviceID: d1.ID, Metric: domain.MetricEnergyKWh, PeriodStart: s, PeriodEnd: e, Value: floatPtr(0.0), RawValue: "0"},
+		{DeviceID: d2.ID, Metric: domain.MetricEnergyKWh, PeriodStart: s, PeriodEnd: e, Value: floatPtr(0.0), RawValue: "0"},
+		{DeviceID: d3.ID, Metric: domain.MetricEnergyKWh, PeriodStart: s, PeriodEnd: e, Value: floatPtr(38.0), RawValue: "38"},
+	})
+
+	_, err := quality.Classify(ctx, st, p.ID, time.Time{}, time.Time{})
+	if err != nil {
+		t.Fatalf("classify: %v", err)
+	}
+
+	r1, _ := st.ListReadings(ctx, store.ReadingFilter{DeviceID: d1.ID, Metric: domain.MetricEnergyKWh, From: s, To: e})
+	if r1[0].Quality != domain.QualityInvalid || r1[0].QualityReason != "zero_with_peers_generating" {
+		t.Errorf("D1 expected invalid/zero_with_peers_generating, got %s/%s", r1[0].Quality, r1[0].QualityReason)
+	}
+	r2, _ := st.ListReadings(ctx, store.ReadingFilter{DeviceID: d2.ID, Metric: domain.MetricEnergyKWh, From: s, To: e})
+	if r2[0].Quality != domain.QualityInvalid || r2[0].QualityReason != "zero_with_peers_generating" {
+		t.Errorf("D2 expected invalid/zero_with_peers_generating, got %s/%s", r2[0].Quality, r2[0].QualityReason)
+	}
+}
+
+// TestAllDevicesZeroIsSuspect verifies that when all devices report zero,
+// they are suspect (zero_no_peer_evidence) and NEVER ok.
+func TestAllDevicesZeroIsSuspect(t *testing.T) {
+	ctx := context.Background()
+	st, src := newTestStore(t)
+	p, _ := st.UpsertPlant(ctx, domain.Plant{SourceID: src.ID, ExternalID: "P1", Name: "P1", Timezone: "America/Sao_Paulo"})
+	d1, _ := st.UpsertDevice(ctx, domain.Device{PlantID: p.ID, ExternalID: "D1", Name: "D1", PanelAreaM2: floatPtr(50), Efficiency: floatPtr(0.2)})
+	d2, _ := st.UpsertDevice(ctx, domain.Device{PlantID: p.ID, ExternalID: "D2", Name: "D2", PanelAreaM2: floatPtr(50), Efficiency: floatPtr(0.2)})
+	d3, _ := st.UpsertDevice(ctx, domain.Device{PlantID: p.ID, ExternalID: "D3", Name: "D3", PanelAreaM2: floatPtr(50), Efficiency: floatPtr(0.2)})
+
+	s, e := localDayHelper("2026-07-01")
+	st.InsertReadings(ctx, []domain.Reading{
+		{DeviceID: d1.ID, Metric: domain.MetricEnergyKWh, PeriodStart: s, PeriodEnd: e, Value: floatPtr(0.0), RawValue: "0"},
+		{DeviceID: d2.ID, Metric: domain.MetricEnergyKWh, PeriodStart: s, PeriodEnd: e, Value: floatPtr(0.0), RawValue: "0"},
+		{DeviceID: d3.ID, Metric: domain.MetricEnergyKWh, PeriodStart: s, PeriodEnd: e, Value: floatPtr(0.0), RawValue: "0"},
+	})
+
+	summary, err := quality.Classify(ctx, st, p.ID, time.Time{}, time.Time{})
+	if err != nil {
+		t.Fatalf("classify: %v", err)
+	}
+
+	if summary.CountsByReason["zero_no_peer_evidence"] != 3 {
+		t.Errorf("expected 3 zero_no_peer_evidence, got %d (summary: %v)", summary.CountsByReason["zero_no_peer_evidence"], summary.CountsByReason)
+	}
+	if summary.CountsByQuality[domain.QualityOK] != 0 {
+		t.Errorf("expected 0 OK, got %d", summary.CountsByQuality[domain.QualityOK])
+	}
+}
+
+// TestZeroRunIsInvalidEvenWithLowPeers verifies:
+// zero_run: device has 0 on 3 or more consecutive days -> invalid, even when peers are at 2 to 4 kWh.
+func TestZeroRunIsInvalidEvenWithLowPeers(t *testing.T) {
+	ctx := context.Background()
+	st, src := newTestStore(t)
+	p, _ := st.UpsertPlant(ctx, domain.Plant{SourceID: src.ID, ExternalID: "P1", Name: "P1", Timezone: "America/Sao_Paulo"})
+	d1, _ := st.UpsertDevice(ctx, domain.Device{PlantID: p.ID, ExternalID: "D1", Name: "D1", PanelAreaM2: floatPtr(50), Efficiency: floatPtr(0.2)})
+	d2, _ := st.UpsertDevice(ctx, domain.Device{PlantID: p.ID, ExternalID: "D2", Name: "D2", PanelAreaM2: floatPtr(50), Efficiency: floatPtr(0.2)})
+	d3, _ := st.UpsertDevice(ctx, domain.Device{PlantID: p.ID, ExternalID: "D3", Name: "D3", PanelAreaM2: floatPtr(50), Efficiency: floatPtr(0.2)})
+
+	days := []string{"2026-07-01", "2026-07-02", "2026-07-03"}
+	for _, day := range days {
+		s, e := localDayHelper(day)
+		st.InsertReadings(ctx, []domain.Reading{
+			{DeviceID: d1.ID, Metric: domain.MetricEnergyKWh, PeriodStart: s, PeriodEnd: e, Value: floatPtr(0.0), RawValue: "0"},
+			{DeviceID: d2.ID, Metric: domain.MetricEnergyKWh, PeriodStart: s, PeriodEnd: e, Value: floatPtr(2.5), RawValue: "2.5"},
+			{DeviceID: d3.ID, Metric: domain.MetricEnergyKWh, PeriodStart: s, PeriodEnd: e, Value: floatPtr(3.5), RawValue: "3.5"},
+		})
+	}
+
+	summary, err := quality.Classify(ctx, st, p.ID, time.Time{}, time.Time{})
+	if err != nil {
+		t.Fatalf("classify: %v", err)
+	}
+
+	if summary.CountsByReason["zero_run"] != 3 {
+		t.Errorf("expected 3 zero_run, got %d", summary.CountsByReason["zero_run"])
+	}
+
+	for _, day := range days {
+		s, e := localDayHelper(day)
+		r, _ := st.ListReadings(ctx, store.ReadingFilter{DeviceID: d1.ID, Metric: domain.MetricEnergyKWh, From: s, To: e})
+		if r[0].Quality != domain.QualityInvalid || r[0].QualityReason != "zero_run" {
+			t.Errorf("day %s D1 expected invalid/zero_run, got %s/%s", day, r[0].Quality, r[0].QualityReason)
+		}
+	}
+}
+
+// TestZeroRunBrokenByDateGap verifies that a date gap breaks a zero run,
+// so neither segment qualifies as zero_run when each segment is shorter than 3 days.
+func TestZeroRunBrokenByDateGap(t *testing.T) {
+	ctx := context.Background()
+	st, src := newTestStore(t)
+	p, _ := st.UpsertPlant(ctx, domain.Plant{SourceID: src.ID, ExternalID: "P1", Name: "P1", Timezone: "America/Sao_Paulo"})
+	d1, _ := st.UpsertDevice(ctx, domain.Device{PlantID: p.ID, ExternalID: "D1", Name: "D1", PanelAreaM2: floatPtr(50), Efficiency: floatPtr(0.2)})
+	d2, _ := st.UpsertDevice(ctx, domain.Device{PlantID: p.ID, ExternalID: "D2", Name: "D2", PanelAreaM2: floatPtr(50), Efficiency: floatPtr(0.2)})
+
+	// Days 1 and 2: zero. Day 3 missing. Days 4 and 5: zero.
+	// Peer D2 generates 20 kWh on all 4 days.
+	// If the gap didn't break the run, all 4 would be zero_run.
+	// Because the gap breaks the run, neither run is >= 3, so none is zero_run.
+	// Instead, each is zero_with_peers_generating.
+	days := []string{"2026-07-01", "2026-07-02", "2026-07-04", "2026-07-05"}
+	for _, day := range days {
+		s, e := localDayHelper(day)
+		st.InsertReadings(ctx, []domain.Reading{
+			{DeviceID: d1.ID, Metric: domain.MetricEnergyKWh, PeriodStart: s, PeriodEnd: e, Value: floatPtr(0.0), RawValue: "0"},
+			{DeviceID: d2.ID, Metric: domain.MetricEnergyKWh, PeriodStart: s, PeriodEnd: e, Value: floatPtr(20.0), RawValue: "20"},
+		})
+	}
+
+	summary, err := quality.Classify(ctx, st, p.ID, time.Time{}, time.Time{})
+	if err != nil {
+		t.Fatalf("classify: %v", err)
+	}
+
+	if summary.CountsByReason["zero_run"] != 0 {
+		t.Errorf("expected 0 zero_run due to date gap, got %d", summary.CountsByReason["zero_run"])
+	}
+	if summary.CountsByReason["zero_with_peers_generating"] != 4 {
+		t.Errorf("expected 4 zero_with_peers_generating, got %d", summary.CountsByReason["zero_with_peers_generating"])
+	}
+}
+
+// TestPlantAggregateIsNotAPeer verifies that devices with Kind "plant"
+// are excluded from peer evaluation.
+func TestPlantAggregateIsNotAPeer(t *testing.T) {
+	ctx := context.Background()
+	st, src := newTestStore(t)
+	p, _ := st.UpsertPlant(ctx, domain.Plant{SourceID: src.ID, ExternalID: "P1", Name: "P1", Timezone: "America/Sao_Paulo"})
+	dInverter1, _ := st.UpsertDevice(ctx, domain.Device{PlantID: p.ID, ExternalID: "INV1", Name: "Inverter 1", Kind: "inverter"})
+	dInverter2, _ := st.UpsertDevice(ctx, domain.Device{PlantID: p.ID, ExternalID: "INV2", Name: "Inverter 2", Kind: "inverter"})
+	dPlantAgg, _ := st.UpsertDevice(ctx, domain.Device{PlantID: p.ID, ExternalID: "AGG", Name: "Plant Total", Kind: "plant"})
+
+	s, e := localDayHelper("2026-07-01")
+	st.InsertReadings(ctx, []domain.Reading{
+		{DeviceID: dInverter1.ID, Metric: domain.MetricEnergyKWh, PeriodStart: s, PeriodEnd: e, Value: floatPtr(0.0), RawValue: "0"},
+		{DeviceID: dInverter2.ID, Metric: domain.MetricEnergyKWh, PeriodStart: s, PeriodEnd: e, Value: floatPtr(0.0), RawValue: "0"},
+		{DeviceID: dPlantAgg.ID, Metric: domain.MetricEnergyKWh, PeriodStart: s, PeriodEnd: e, Value: floatPtr(50.0), RawValue: "50"},
+	})
+
+	_, err := quality.Classify(ctx, st, p.ID, time.Time{}, time.Time{})
+	if err != nil {
+		t.Fatalf("classify: %v", err)
+	}
+
+	rInv, _ := st.ListReadings(ctx, store.ReadingFilter{DeviceID: dInverter1.ID, Metric: domain.MetricEnergyKWh, From: s, To: e})
+	// dPlantAgg must NOT count as a peer. Therefore dInverter1 only has dInverter2 (at 0) as peer -> zero_no_peer_evidence (suspect)
+	if rInv[0].Quality != domain.QualitySuspect || rInv[0].QualityReason != "zero_no_peer_evidence" {
+		t.Errorf("INV1 expected suspect/zero_no_peer_evidence (not zero_with_peers_generating), got %s/%s",
+			rInv[0].Quality, rInv[0].QualityReason)
+	}
+}
+
+// TestNoZeroValueEverEndsAsOK is a table-driven test proving that no zero value ever ends as OK.
+func TestNoZeroValueEverEndsAsOK(t *testing.T) {
+	tests := []struct {
+		name            string
+		peerValues      []float64
+		runLength       int
+		expectedQuality domain.Quality
+		expectedReason  string
+	}{
+		{
+			name:            "Single zero with 1 peer generating 2 kWh",
+			peerValues:      []float64{2.0},
+			runLength:       1,
+			expectedQuality: domain.QualityInvalid,
+			expectedReason:  "zero_with_peers_generating",
+		},
+		{
+			name:            "Single zero with 1 peer generating 38 kWh",
+			peerValues:      []float64{38.0},
+			runLength:       1,
+			expectedQuality: domain.QualityInvalid,
+			expectedReason:  "zero_with_peers_generating",
+		},
+		{
+			name:            "Single zero with 1 peer at 0 and 1 peer at 20",
+			peerValues:      []float64{0.0, 20.0},
+			runLength:       1,
+			expectedQuality: domain.QualityInvalid,
+			expectedReason:  "zero_with_peers_generating",
+		},
+		{
+			name:            "Zero run of 3 days with peers at 0.5 kWh",
+			peerValues:      []float64{0.5},
+			runLength:       3,
+			expectedQuality: domain.QualityInvalid,
+			expectedReason:  "zero_run",
+		},
+		{
+			name:            "Single zero with peers at 0.5 kWh (<= 1 kWh)",
+			peerValues:      []float64{0.5, 0.8},
+			runLength:       1,
+			expectedQuality: domain.QualitySuspect,
+			expectedReason:  "zero_no_peer_evidence",
+		},
+		{
+			name:            "Single zero with all peers at 0",
+			peerValues:      []float64{0.0, 0.0},
+			runLength:       1,
+			expectedQuality: domain.QualitySuspect,
+			expectedReason:  "zero_no_peer_evidence",
+		},
+		{
+			name:            "Single zero with no peers",
+			peerValues:      nil,
+			runLength:       1,
+			expectedQuality: domain.QualitySuspect,
+			expectedReason:  "zero_no_peer_evidence",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			st, src := newTestStore(t)
+			p, _ := st.UpsertPlant(ctx, domain.Plant{SourceID: src.ID, ExternalID: "P", Name: "P", Timezone: "America/Sao_Paulo"})
+			dTarget, _ := st.UpsertDevice(ctx, domain.Device{PlantID: p.ID, ExternalID: "TARGET", Name: "Target"})
+
+			var peers []domain.Device
+			for i := range tc.peerValues {
+				dPeer, _ := st.UpsertDevice(ctx, domain.Device{PlantID: p.ID, ExternalID: fmt.Sprintf("PEER_%d", i), Name: fmt.Sprintf("Peer %d", i)})
+				peers = append(peers, dPeer)
+			}
+
+			for day := 1; day <= tc.runLength; day++ {
+				dateStr := fmt.Sprintf("2026-07-%02d", day)
+				s, e := localDayHelper(dateStr)
+				st.InsertReadings(ctx, []domain.Reading{
+					{DeviceID: dTarget.ID, Metric: domain.MetricEnergyKWh, PeriodStart: s, PeriodEnd: e, Value: floatPtr(0.0), RawValue: "0"},
+				})
+				for i, pv := range tc.peerValues {
+					v := pv
+					st.InsertReadings(ctx, []domain.Reading{
+						{DeviceID: peers[i].ID, Metric: domain.MetricEnergyKWh, PeriodStart: s, PeriodEnd: e, Value: &v, RawValue: fmt.Sprintf("%v", v)},
+					})
+				}
+			}
+
+			summary, err := quality.Classify(ctx, st, p.ID, time.Time{}, time.Time{})
+			if err != nil {
+				t.Fatalf("classify: %v", err)
+			}
+
+			// In no case can the target device reading be QualityOK!
+			targetCounts := summary.ByDevice["Target"]
+			if targetCounts[quality.ReasonOK] > 0 {
+				t.Fatalf("zero value ended as OK! counts: %v", targetCounts)
+			}
+
+			// Verify target readings have expected quality and reason
+			sFirst, _ := localDayHelper("2026-07-01")
+			_, eLast := localDayHelper(fmt.Sprintf("2026-07-%02d", tc.runLength))
+			readings, _ := st.ListReadings(ctx, store.ReadingFilter{DeviceID: dTarget.ID, Metric: domain.MetricEnergyKWh, From: sFirst, To: eLast})
+			for _, r := range readings {
+				if r.Quality == domain.QualityOK {
+					t.Errorf("zero reading was marked OK")
+				}
+				if r.Quality != tc.expectedQuality || r.QualityReason != tc.expectedReason {
+					t.Errorf("expected %s/%s, got %s/%s", tc.expectedQuality, tc.expectedReason, r.Quality, r.QualityReason)
+				}
+			}
+		})
 	}
 }

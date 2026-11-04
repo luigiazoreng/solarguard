@@ -4,6 +4,7 @@ package fileimport
 import (
 	"context"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -22,6 +23,12 @@ const (
 	SemanticsSameDay     StampSemantics = "same_day"
 )
 
+// WhCutoff separates numeric cells already in kWh from those in Wh.
+// In the historical spreadsheet, numeric cells with absolute value below 1000
+// (such as 44 and 2) are already in kWh, while the smallest true Wh cell in
+// the dataset is 2001.
+const WhCutoff = 1000.0
+
 // Options specifies the parameters for importing a spreadsheet.
 type Options struct {
 	File           string
@@ -36,13 +43,14 @@ type Options struct {
 
 // Summary reports the results of an import operation.
 type Summary struct {
-	Rows            int
-	Inserted        int
-	TextCells       int
-	UnparsableCells int
-	Devices         int
-	FirstDate       string
-	LastDate        string
+	Rows              int
+	Inserted          int
+	TextCells         int
+	SmallNumericCells int
+	UnparsableCells   int
+	Devices           int
+	FirstDate         string
+	LastDate          string
 }
 
 const (
@@ -253,8 +261,17 @@ func ImportXLSX(ctx context.Context, st *store.Store, opts Options) (Summary, er
 				if err != nil {
 					summary.UnparsableCells++
 				} else {
-					kwh := parsed / 1000.0 // numeric cell is in Wh
-					valPtr = &kwh
+					if math.Abs(parsed) < WhCutoff {
+						// Absolute value below 1000: already kWh, no division
+						valPtr = &parsed
+						if parsed != 0 {
+							summary.SmallNumericCells++
+						}
+					} else {
+						// Absolute value at or above 1000: Wh, divide by 1000
+						kwh := parsed / 1000.0
+						valPtr = &kwh
+					}
 				}
 			} else {
 				summary.UnparsableCells++

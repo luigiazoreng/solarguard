@@ -78,6 +78,7 @@ func runImport(ctx context.Context, args []string) error {
 	fmt.Printf("Linhas lidas: %d\n", summary.Rows)
 	fmt.Printf("Linhas inseridas: %d\n", summary.Inserted)
 	fmt.Printf("Células de texto: %d\n", summary.TextCells)
+	fmt.Printf("Células numéricas pequenas: %d\n", summary.SmallNumericCells)
 	fmt.Printf("Células não analisáveis: %d\n", summary.UnparsableCells)
 	fmt.Printf("Dispositivos: %d\n", summary.Devices)
 	fmt.Printf("Primeira data: %s\n", summary.FirstDate)

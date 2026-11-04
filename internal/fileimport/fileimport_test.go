@@ -166,6 +166,78 @@ func TestCellTypesUnitRule(t *testing.T) {
 	}
 }
 
+// TestSmallNumericCellIsAlreadyKWh verifies that:
+// - numeric cell 44 (below 1000) is already kWh and gives 44
+// - numeric cell 2001 (at or above 1000) is Wh and gives 2.001
+func TestSmallNumericCellIsAlreadyKWh(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+
+	f := excelize.NewFile()
+	sheet := "Sheet1"
+	f.SetCellValue(sheet, "A1", "Torre")
+	f.SetCellValue(sheet, "B1", "UTCDateTime")
+	f.SetCellValue(sheet, "C1", "ActualValue (KW)")
+
+	// Row 2: numeric 44 (already kWh)
+	f.SetCellValue(sheet, "A2", "INV-1")
+	f.SetCellValue(sheet, "B2", "2026-05-06 03:00:00.000")
+	f.SetCellValue(sheet, "C2", 44)
+
+	// Row 3: numeric 2001 (Wh -> 2.001 kWh)
+	f.SetCellValue(sheet, "A3", "INV-1")
+	f.SetCellValue(sheet, "B3", "2026-05-07 03:00:00.000")
+	f.SetCellValue(sheet, "C3", 2001)
+
+	path := filepath.Join(t.TempDir(), "small_numeric.xlsx")
+	if err := f.SaveAs(path); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	summary, err := fileimport.ImportXLSX(ctx, st, fileimport.Options{
+		File:           path,
+		Source:         "test_src",
+		PlantID:        "PLANT_SMALL",
+		PlantName:      "Plant Small",
+		Timezone:       "America/Sao_Paulo",
+		StampSemantics: fileimport.SemanticsPreviousDay,
+	})
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+
+	devs, _ := st.ListDevices(ctx, 1)
+	readings, _ := st.ListReadings(ctx, store.ReadingFilter{
+		DeviceID: devs[0].ID,
+		Metric:   domain.MetricEnergyKWh,
+		From:     time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC),
+		To:       time.Date(2026, 5, 10, 0, 0, 0, 0, time.UTC),
+	})
+	if len(readings) != 2 {
+		t.Fatalf("expected 2 readings, got %d", len(readings))
+	}
+
+	// 44 must be 44 kWh (no division)
+	if readings[0].Value == nil || *readings[0].Value != 44.0 {
+		t.Errorf("expected 44.0 for cell 44, got %v", readings[0].Value)
+	}
+	if readings[0].RawValue != "44" {
+		t.Errorf("expected RawValue 44, got %q", readings[0].RawValue)
+	}
+
+	// 2001 must be 2.001 kWh (divided by 1000)
+	if readings[1].Value == nil || *readings[1].Value != 2.001 {
+		t.Errorf("expected 2.001 for cell 2001, got %v", readings[1].Value)
+	}
+	if readings[1].RawValue != "2001" {
+		t.Errorf("expected RawValue 2001, got %q", readings[1].RawValue)
+	}
+
+	if summary.Rows != 2 {
+		t.Errorf("expected 2 rows, got %d", summary.Rows)
+	}
+}
+
 // TestStampSemanticsBounds verifies that previous_day and same_day give correct UTC bounds.
 func TestStampSemanticsBounds(t *testing.T) {
 	ctx := context.Background()

@@ -17,6 +17,7 @@ const (
 	ReasonNegativeValue           = "negative_value"
 	ReasonImplausibleHigh         = "implausible_high"
 	ReasonStuckValue              = "stuck_value"
+	ReasonZeroRun                 = "zero_run"
 	ReasonZeroWithPeersGenerating = "zero_with_peers_generating"
 	ReasonZeroNoPeerEvidence      = "zero_no_peer_evidence"
 	ReasonOK                      = "ok"
@@ -172,15 +173,69 @@ func Classify(ctx context.Context, st *store.Store, plantID int64, from, to time
 		}
 	}
 
-	// Group by local day to evaluate peer rules 5, 6, 7
+	// zero_run: the device has 0 on 3 or more consecutive days.
+	// Every day in the run is invalid. Runs are computed the same way as stuck_value,
+	// and a date gap breaks the run.
+	for _, indices := range byDevice {
+		runStart := 0
+		for i := 0; i < len(indices); i++ {
+			if i == 0 {
+				runStart = 0
+				continue
+			}
+			currIdx := indices[i]
+			prevIdx := indices[i-1]
+			currR := &items[currIdx]
+			prevR := &items[prevIdx]
+
+			tPrev, _ := time.Parse(time.DateOnly, prevR.dateStr)
+			tCurr, _ := time.Parse(time.DateOnly, currR.dateStr)
+			isConsecutive := tPrev.AddDate(0, 0, 1).Equal(tCurr)
+			isZero := currR.reading.Value != nil && *currR.reading.Value == 0 && prevR.reading.Value != nil && *prevR.reading.Value == 0
+
+			if isConsecutive && isZero {
+				// continue current zero run
+			} else {
+				// end run
+				if i-runStart >= 3 {
+					startR := &items[indices[runStart]]
+					if startR.reading.Value != nil && *startR.reading.Value == 0 {
+						for k := runStart; k < i; k++ {
+							rIdx := indices[k]
+							if items[rIdx].reason == "" {
+								items[rIdx].quality = domain.QualityInvalid
+								items[rIdx].reason = ReasonZeroRun
+							}
+						}
+					}
+				}
+				runStart = i
+			}
+		}
+		// check final run
+		if len(indices)-runStart >= 3 {
+			startR := &items[indices[runStart]]
+			if startR.reading.Value != nil && *startR.reading.Value == 0 {
+				for k := runStart; k < len(indices); k++ {
+					rIdx := indices[k]
+					if items[rIdx].reason == "" {
+						items[rIdx].quality = domain.QualityInvalid
+						items[rIdx].reason = ReasonZeroRun
+					}
+				}
+			}
+		}
+	}
+
+	// Group by local day to evaluate peer rules
 	byDate := make(map[string][]int)
 	for i, it := range items {
 		byDate[it.dateStr] = append(byDate[it.dateStr], i)
 	}
 
-	isDefect1to4 := func(reason string) bool {
+	isDefective := func(reason string) bool {
 		switch reason {
-		case ReasonValueMissing, ReasonNegativeValue, ReasonImplausibleHigh, ReasonStuckValue:
+		case ReasonValueMissing, ReasonNegativeValue, ReasonImplausibleHigh, ReasonStuckValue, ReasonZeroRun:
 			return true
 		default:
 			return false
@@ -190,49 +245,46 @@ func Classify(ctx context.Context, st *store.Store, plantID int64, from, to time
 	for _, indices := range byDate {
 		for _, idx := range indices {
 			it := &items[idx]
-			// First match wins: if already classified by rules 1..4, leave untouched
-			if isDefect1to4(it.reason) {
+			// First match wins: if already classified by rules 1..4 (or zero_run), leave untouched
+			if isDefective(it.reason) {
 				continue
 			}
 
 			val := *it.reading.Value
 			if val == 0 {
-				// Peer evaluation:
-				// Count other devices of the plant with an ok-so-far reading on that day
-				var okPeersCount int
-				var okPeersAbove5Count int
+				// zero_with_peers_generating: value 0 and at least 1 peer has an ok-so-far value above 1 kWh. Invalid.
+				// zero_no_peer_evidence: every other zero, including all peers at zero and no peers at all. Suspect.
+				// A peer with a defect from rules 1 to 4 (including zero_run) is not evidence.
+				// Peers exclude devices with Kind "plant", because that is a plant aggregate and not a peer.
+				var okPeersAbove1Count int
 
 				for _, peerIdx := range indices {
 					if peerIdx == idx {
 						continue
 					}
 					peerIt := &items[peerIdx]
-					// Ok-so-far peer: did not match rules 1..4 and has non-nil value
-					if !isDefect1to4(peerIt.reason) && peerIt.reading.Value != nil {
-						okPeersCount++
-						if *peerIt.reading.Value > 5.0 {
-							okPeersAbove5Count++
-						}
+					peerDev := devMap[peerIt.reading.DeviceID]
+					if peerDev.Kind == "plant" {
+						continue
+					}
+					if isDefective(peerIt.reason) || peerIt.reading.Value == nil {
+						continue
+					}
+
+					if *peerIt.reading.Value > 1.0 {
+						okPeersAbove1Count++
 					}
 				}
 
-				// Rule 5: zero_with_peers_generating
-				// Value is 0 and at least 2 other devices of the plant have an ok-so-far value above 5 kWh on that day. Invalid.
-				if okPeersAbove5Count >= 2 {
+				if okPeersAbove1Count >= 1 {
 					it.quality = domain.QualityInvalid
 					it.reason = ReasonZeroWithPeersGenerating
-				} else if okPeersCount < 2 {
-					// Rule 6: zero_no_peer_evidence
-					// Value is 0 and rule 5 cannot be evaluated because of too few peers. Suspect.
+				} else {
 					it.quality = domain.QualitySuspect
 					it.reason = ReasonZeroNoPeerEvidence
-				} else {
-					// Rule 7: otherwise ok
-					it.quality = domain.QualityOK
-					it.reason = ReasonOK
 				}
 			} else {
-				// Non-zero value and did not match rules 1..4 -> Rule 7: otherwise ok
+				// Non-zero value and did not match rules 1..4 -> Rule: otherwise ok
 				it.quality = domain.QualityOK
 				it.reason = ReasonOK
 			}
