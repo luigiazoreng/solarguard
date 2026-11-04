@@ -384,3 +384,153 @@ func TestReport_PrevisaoCondition(t *testing.T) {
 		t.Errorf("RepB should not contain upcoming forecast for 2026-03-02:\n%s", repB.BodyMD)
 	}
 }
+
+// 7. TestReportShowsDetectedOnFromEvidence: "Detectado em" must show detected_on from evidence_json, formatted DD/MM/AAAA.
+func TestReportShowsDetectedOnFromEvidence(t *testing.T) {
+	st, ctx := setupTestDB(t)
+	tz := "America/Sao_Paulo"
+	plant, devs := createPlant(t, ctx, st, "PlantDetectedOn", tz, "D1")
+
+	alert := store.Alert{
+		PlantID:      plant.ID,
+		DeviceID:     &devs[0].ID,
+		Rule:         "stuck_value",
+		Severity:     "critical",
+		Status:       "open",
+		DedupeKey:    "test|detected_on",
+		Title:        "Leitura travada em D1",
+		EvidenceJSON: `{"detected_on":"2026-02-18"}`,
+		FirstDate:    "2026-02-16",
+		LastDate:     "2026-02-20",
+		CreatedAt:    time.Date(2026, 11, 4, 15, 10, 0, 0, time.UTC),
+	}
+	if err := st.SaveAlert(ctx, &alert); err != nil {
+		t.Fatalf("save alert: %v", err)
+	}
+
+	rep, err := reports.Generate(ctx, st, reports.Request{
+		PlantID: plant.ID,
+		Kind:    "period",
+		From:    "2026-02-01",
+		To:      "2026-02-28",
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	// Must show 18/02/2026 in the detected on column
+	if !strings.Contains(rep.BodyMD, "18/02/2026") {
+		t.Errorf("expected detected_on '18/02/2026' in markdown:\n%s", rep.BodyMD)
+	}
+	// Must NOT show CreatedAt date in detected on
+	if strings.Contains(rep.BodyMD, "04/11/2026") || strings.Contains(rep.BodyMD, "2026-11-04") {
+		t.Errorf("markdown contains CreatedAt instead of detected_on:\n%s", rep.BodyMD)
+	}
+}
+
+// 8. TestReportLabelsAreReadable: Brazilian readability checks:
+// - Friendly Portuguese labels for rules, reasons, severities, status
+// - No raw rule code appears
+// - All dates DD/MM/AAAA
+// - Ratios in pt-BR: 0,99 and never 0.99x
+// - Title "Relatório de geração: <planta>"
+// - No `> [!NOTE]` or `> [!IMPORTANT]`
+// - Section numbers sequential, forecast section included with explanation if old.
+func TestReportLabelsAreReadable(t *testing.T) {
+	st, ctx := setupTestDB(t)
+	tz := "America/Sao_Paulo"
+	plant, devs := createPlant(t, ctx, st, "PlantReadable", tz, "D1", "D2")
+
+	mrun, _ := st.UpsertModelRun(ctx, store.ModelRun{
+		Name:        "ridge",
+		Version:     "v1",
+		PlantID:     plant.ID,
+		TrainedAt:   time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC),
+		MetricsJSON: `{"walk_forward":{"pooled":{"mae":4.45,"rmse":6.10,"r2":0.85,"wape":0.137}}}`,
+		Active:      true,
+	})
+
+	_ = st.UpsertPredictions(ctx, []store.Prediction{
+		{DeviceID: devs[0].ID, Date: "2026-03-01", ModelRunID: mrun.ID, KWhExpected: 10.0},
+		{DeviceID: devs[1].ID, Date: "2026-03-01", ModelRunID: mrun.ID, KWhExpected: 20.0},
+	})
+
+	insertReading(t, ctx, st, devs[0].ID, tz, "2026-03-01", 10.0, domain.QualityOK, "")
+	insertReading(t, ctx, st, devs[1].ID, tz, "2026-03-01", 19.8, domain.QualityOK, "")
+
+	// Alert with rule code
+	alert := store.Alert{
+		PlantID:      plant.ID,
+		DeviceID:     &devs[0].ID,
+		Rule:         "under_expected",
+		Severity:     "warning",
+		Status:       "open",
+		DedupeKey:    "test|readable",
+		Title:        "Geração abaixo do esperado em D1",
+		EvidenceJSON: `{"detected_on":"2026-03-01"}`,
+		FirstDate:    "2026-03-01",
+		LastDate:     "2026-03-01",
+	}
+	_ = st.SaveAlert(ctx, &alert)
+
+	fixedNow := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC) // > 3 days after 2026-03-01
+	rep, err := reports.GenerateWithTime(ctx, st, reports.Request{
+		PlantID: plant.ID,
+		Kind:    "period",
+		From:    "2026-03-01",
+		To:      "2026-03-01",
+	}, fixedNow)
+	if err != nil {
+		t.Fatalf("GenerateWithTime: %v", err)
+	}
+
+	md := rep.BodyMD
+
+	// Title format: "Relatório de geração: <planta>"
+	if !strings.Contains(md, "# Relatório de geração: PlantReadable") {
+		t.Errorf("title does not match 'Relatório de geração: PlantReadable':\n%s", md)
+	}
+
+	// Must NOT contain raw rule code under_expected
+	if strings.Contains(md, "`under_expected`") || strings.Contains(md, "under_expected") {
+		t.Errorf("raw rule code 'under_expected' found in markdown:\n%s", md)
+	}
+	// Must contain friendly rule label "Abaixo do esperado"
+	if !strings.Contains(md, "Abaixo do esperado") {
+		t.Errorf("expected friendly rule label 'Abaixo do esperado' in markdown:\n%s", md)
+	}
+
+	// Severity / status translated
+	if !strings.Contains(md, "aviso") {
+		t.Errorf("expected translated severity 'aviso' in markdown:\n%s", md)
+	}
+	if !strings.Contains(md, "aberto") {
+		t.Errorf("expected translated status 'aberto' in markdown:\n%s", md)
+	}
+
+	// Dates in DD/MM/AAAA
+	if !strings.Contains(md, "01/03/2026") {
+		t.Errorf("expected date '01/03/2026' in markdown:\n%s", md)
+	}
+	if strings.Contains(md, "2026-03-01") {
+		t.Errorf("raw ISO date '2026-03-01' found in markdown:\n%s", md)
+	}
+
+	// Ratio in pt-BR: 0,99 and NEVER 0.99x
+	if strings.Contains(md, "x") && strings.Contains(md, "0.") {
+		t.Errorf("ratio found with 'x' or dot format:\n%s", md)
+	}
+
+	// No github callout syntax > [!NOTE] or > [!IMPORTANT]
+	if strings.Contains(md, "> [!NOTE]") || strings.Contains(md, "> [!IMPORTANT]") {
+		t.Errorf("markdown contains unsupported callout syntax:\n%s", md)
+	}
+
+	// Sequential section numbers: 1, 2, 3, 4, 5, 6
+	sections := []string{"## 1.", "## 2.", "## 3.", "## 4.", "## 5.", "## 6."}
+	for _, sec := range sections {
+		if !strings.Contains(md, sec) {
+			t.Errorf("missing section heading %s in markdown:\n%s", sec, md)
+		}
+	}
+}

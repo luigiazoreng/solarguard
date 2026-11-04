@@ -141,6 +141,26 @@ func handleGetPlant(st *store.Store) mcp.ToolHandlerFor[GetPlantInput, GetPlantO
 	}
 }
 
+// validateDateRangeLimit ensures valid date format, chronological order, and max 400-day range.
+func validateDateRangeLimit(from, to string) error {
+	tFrom, err := time.Parse(time.DateOnly, from)
+	if err != nil {
+		return fmt.Errorf("data inicial inválida %q: use o formato YYYY-MM-DD", from)
+	}
+	tTo, err := time.Parse(time.DateOnly, to)
+	if err != nil {
+		return fmt.Errorf("data final inválida %q: use o formato YYYY-MM-DD", to)
+	}
+	if tFrom.After(tTo) {
+		return fmt.Errorf("intervalo inválido: data inicial (%s) posterior à data final (%s)", from, to)
+	}
+	days := int(tTo.Sub(tFrom).Hours()/24) + 1
+	if days > 400 {
+		return fmt.Errorf("intervalo de %d dias excede o limite máximo de 400 dias", days)
+	}
+	return nil
+}
+
 // -------------------------------------------------------------------------
 // 3. get_generation
 // -------------------------------------------------------------------------
@@ -155,6 +175,9 @@ type GetGenerationInput struct {
 
 func handleGetGeneration(st *store.Store) mcp.ToolHandlerFor[GetGenerationInput, analytics.GenerationSummary] {
 	return func(ctx context.Context, req *mcp.CallToolRequest, in GetGenerationInput) (*mcp.CallToolResult, analytics.GenerationSummary, error) {
+		if err := validateDateRangeLimit(in.From, in.To); err != nil {
+			return nil, analytics.GenerationSummary{}, err
+		}
 		res, err := analytics.Generation(ctx, st, in.PlantID, in.DeviceID, in.From, in.To, in.Granularity)
 		if err != nil {
 			return nil, analytics.GenerationSummary{}, err
@@ -176,6 +199,9 @@ type GetExpectedVsActualInput struct {
 
 func handleGetExpectedVsActual(st *store.Store) mcp.ToolHandlerFor[GetExpectedVsActualInput, analytics.ExpectedVsActualSummary] {
 	return func(ctx context.Context, req *mcp.CallToolRequest, in GetExpectedVsActualInput) (*mcp.CallToolResult, analytics.ExpectedVsActualSummary, error) {
+		if err := validateDateRangeLimit(in.From, in.To); err != nil {
+			return nil, analytics.ExpectedVsActualSummary{}, err
+		}
 		res, err := analytics.ExpectedVsActual(ctx, st, in.PlantID, in.DeviceID, in.From, in.To)
 		if err != nil {
 			return nil, analytics.ExpectedVsActualSummary{}, err
@@ -196,6 +222,9 @@ type GetLostEnergyInput struct {
 
 func handleGetLostEnergy(st *store.Store) mcp.ToolHandlerFor[GetLostEnergyInput, analytics.LostEnergySummary] {
 	return func(ctx context.Context, req *mcp.CallToolRequest, in GetLostEnergyInput) (*mcp.CallToolResult, analytics.LostEnergySummary, error) {
+		if err := validateDateRangeLimit(in.From, in.To); err != nil {
+			return nil, analytics.LostEnergySummary{}, err
+		}
 		res, err := analytics.LostEnergy(ctx, st, in.PlantID, in.From, in.To)
 		if err != nil {
 			return nil, analytics.LostEnergySummary{}, err
@@ -216,6 +245,9 @@ type GetDataQualityInput struct {
 
 func handleGetDataQuality(st *store.Store) mcp.ToolHandlerFor[GetDataQualityInput, analytics.DataQualitySummary] {
 	return func(ctx context.Context, req *mcp.CallToolRequest, in GetDataQualityInput) (*mcp.CallToolResult, analytics.DataQualitySummary, error) {
+		if err := validateDateRangeLimit(in.From, in.To); err != nil {
+			return nil, analytics.DataQualitySummary{}, err
+		}
 		res, err := analytics.DataQuality(ctx, st, in.PlantID, in.From, in.To)
 		if err != nil {
 			return nil, analytics.DataQualitySummary{}, err
@@ -236,6 +268,9 @@ type CompareDevicesInput struct {
 
 func handleCompareDevices(st *store.Store) mcp.ToolHandlerFor[CompareDevicesInput, analytics.CompareDevicesSummary] {
 	return func(ctx context.Context, req *mcp.CallToolRequest, in CompareDevicesInput) (*mcp.CallToolResult, analytics.CompareDevicesSummary, error) {
+		if err := validateDateRangeLimit(in.From, in.To); err != nil {
+			return nil, analytics.CompareDevicesSummary{}, err
+		}
 		res, err := analytics.CompareDevices(ctx, st, in.PlantID, in.From, in.To)
 		if err != nil {
 			return nil, analytics.CompareDevicesSummary{}, err
@@ -391,20 +426,8 @@ type WeatherOutput struct {
 
 func handleGetWeather(st *store.Store) mcp.ToolHandlerFor[GetWeatherInput, WeatherOutput] {
 	return func(ctx context.Context, req *mcp.CallToolRequest, in GetWeatherInput) (*mcp.CallToolResult, WeatherOutput, error) {
-		tFrom, err := time.Parse(time.DateOnly, in.From)
-		if err != nil {
-			return nil, WeatherOutput{}, fmt.Errorf("data inicial inválida %q: use YYYY-MM-DD", in.From)
-		}
-		tTo, err := time.Parse(time.DateOnly, in.To)
-		if err != nil {
-			return nil, WeatherOutput{}, fmt.Errorf("data final inválida %q: use YYYY-MM-DD", in.To)
-		}
-		if tFrom.After(tTo) {
-			return nil, WeatherOutput{}, fmt.Errorf("intervalo inválido: data inicial (%s) posterior à data final (%s)", in.From, in.To)
-		}
-		days := int(tTo.Sub(tFrom).Hours()/24) + 1
-		if days > 400 {
-			return nil, WeatherOutput{}, fmt.Errorf("intervalo de %d dias excede o limite máximo de 400 dias", days)
+		if err := validateDateRangeLimit(in.From, in.To); err != nil {
+			return nil, WeatherOutput{}, err
 		}
 
 		plant, err := st.GetPlant(ctx, in.PlantID)
@@ -552,11 +575,18 @@ type ListReportsOutput struct {
 
 func handleListReports(st *store.Store) mcp.ToolHandlerFor[ListReportsInput, ListReportsOutput] {
 	return func(ctx context.Context, req *mcp.CallToolRequest, in ListReportsInput) (*mcp.CallToolResult, ListReportsOutput, error) {
+		limit := in.Limit
+		if limit <= 0 {
+			limit = 50
+		} else if limit > 200 {
+			limit = 200
+		}
+
 		reps, err := st.ListReports(ctx, store.ReportFilter{
 			PlantID: in.PlantID,
 			Status:  in.Status,
 			Author:  in.Author,
-			Limit:   in.Limit,
+			Limit:   limit,
 			Offset:  in.Offset,
 		})
 		if err != nil {

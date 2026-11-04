@@ -126,11 +126,18 @@ func GenerateWithTime(ctx context.Context, st *store.Store, req Request, now tim
 			"to":   req.To,
 		},
 		"resumo": map[string]any{
-			"medida_kwh":           expVsAct.TotalMeasuredKWh,
-			"esperada_validos_kwh": expVsAct.TotalExpectedKWh,
-			"ratio":                expVsAct.Ratio,
-			"desvio_kwh":           expVsAct.TotalMeasuredKWh - expVsAct.TotalExpectedKWh,
-			"energia_perdida_kwh":  lostSummary.LostEnergyKWh,
+			"medida_kwh":              expVsAct.TotalMeasuredKWh,
+			"esperada_validos_kwh":    expVsAct.TotalExpectedKWh,
+			"medida_pareada_kwh":      expVsAct.PairedMeasuredKWh,
+			"esperada_pareada_kwh":    expVsAct.PairedExpectedKWh,
+			"ratio":                   expVsAct.PairedRatio,
+			"desvio_kwh":              expVsAct.PairedMeasuredKWh - expVsAct.PairedExpectedKWh,
+			"dias_pareados":           expVsAct.PairedDeviceDays,
+			"medida_sem_previsao_kwh": expVsAct.UnpairedMeasuredKWh,
+			"dias_sem_previsao":       expVsAct.UnpairedDeviceDays,
+			"energia_perdida_kwh":     lostSummary.LostEnergyKWh,
+			"dias_problema_cobertos":  lostSummary.DeviceDaysWithExpected,
+			"dias_problema_afetados":  lostSummary.DeviceDaysAffected,
 		},
 		"qualidade_dados": dqSummary,
 		"comparacao":      cmpSummary,
@@ -145,15 +152,7 @@ func GenerateWithTime(ctx context.Context, st *store.Store, req Request, now tim
 	var sb strings.Builder
 	escapedPlantName := escapeMD(plant.Name)
 
-	titleKind := "Período"
-	switch kind {
-	case "weekly":
-		titleKind = "Semanal"
-	case "monthly":
-		titleKind = "Mensal"
-	}
-
-	title := fmt.Sprintf("Relatório %s de Geração — %s (%s a %s)", titleKind, plant.Name, req.From, req.To)
+	title := fmt.Sprintf("Relatório de geração: %s (%s a %s)", plant.Name, formatDatePtBR(req.From), formatDatePtBR(req.To))
 
 	hasValidDays := false
 	for _, d := range expVsAct.Days {
@@ -163,7 +162,7 @@ func GenerateWithTime(ctx context.Context, st *store.Store, req Request, now tim
 		}
 	}
 
-	renderMarkdown(&sb, titleKind, escapedPlantName, plant, req, days, expVsAct, hasValidDays, lostSummary, dqSummary, periodAlerts, loc, cmpSummary, forecastPreds, diffDays, activeModel)
+	renderMarkdown(&sb, escapedPlantName, plant, req, days, expVsAct, hasValidDays, lostSummary, dqSummary, periodAlerts, loc, cmpSummary, forecastPreds, diffDays, activeModel)
 
 	reportRow := store.Report{
 		PlantID:     &plant.ID,
@@ -184,15 +183,15 @@ func GenerateWithTime(ctx context.Context, st *store.Store, req Request, now tim
 	return saved, nil
 }
 
-func renderMarkdown(sb *strings.Builder, titleKind, escapedPlantName string, plant domain.Plant, req Request, days int,
+func renderMarkdown(sb *strings.Builder, escapedPlantName string, plant domain.Plant, req Request, days int,
 	expVsAct analytics.ExpectedVsActualSummary, hasValidDays bool, lostSummary analytics.LostEnergySummary,
 	dqSummary analytics.DataQualitySummary, periodAlerts []store.Alert, loc *time.Location,
 	cmpSummary analytics.CompareDevicesSummary, forecastPreds []store.Prediction, diffDays float64,
 	activeModel store.ModelRun) {
 
-	sb.WriteString(fmt.Sprintf("# Relatório %s de Geração — %s\n\n", titleKind, escapedPlantName))
+	sb.WriteString(fmt.Sprintf("# Relatório de geração: %s\n\n", escapedPlantName))
 	sb.WriteString(fmt.Sprintf("- **Planta:** %s (ID: %d)\n", escapedPlantName, plant.ID))
-	sb.WriteString(fmt.Sprintf("- **Período avaliado:** %s a %s (%d dias)\n", req.From, req.To, days))
+	sb.WriteString(fmt.Sprintf("- **Período avaliado:** %s a %s (%d dias)\n", formatDatePtBR(req.From), formatDatePtBR(req.To), days))
 	sb.WriteString(fmt.Sprintf("- **Fuso horário:** %s\n\n", plant.Timezone))
 
 	// Section 1: Resumo
@@ -200,26 +199,49 @@ func renderMarkdown(sb *strings.Builder, titleKind, escapedPlantName string, pla
 	if !hasValidDays {
 		sb.WriteString("Nenhum dado de medição válida disponível no período avaliado.\n\n")
 		if lostSummary.LostEnergyKWh > 0 {
-			sb.WriteString(fmt.Sprintf("- **Energia estimada perdida:** %s (calculada sobre %d dia(s) com dados ausentes ou inválidos)\n\n",
-				formatKWh(lostSummary.LostEnergyKWh), lostSummary.DeviceDaysAffected))
+			sb.WriteString(fmt.Sprintf("- **Energia estimada perdida:** %s\n\n", formatKWh(lostSummary.LostEnergyKWh)))
+		}
+		if lostSummary.DeviceDaysAffected > 0 {
+			sb.WriteString(fmt.Sprintf("> Estimativa cobre %d de %d dias-dispositivo com problema; os demais não têm geração esperada.\n\n",
+				lostSummary.DeviceDaysWithExpected, lostSummary.DeviceDaysAffected))
 		}
 	} else {
-		desvioKWh := expVsAct.TotalMeasuredKWh - expVsAct.TotalExpectedKWh
-		desvioPctStr := "N/A"
-		if expVsAct.TotalExpectedKWh > 0 {
-			pct := (desvioKWh / expVsAct.TotalExpectedKWh) * 100.0
-			desvioPctStr = formatPercent(pct)
+		var pairedComparisonStr string
+		if expVsAct.PairedDeviceDays > 0 {
+			desvioKWh := expVsAct.PairedMeasuredKWh - expVsAct.PairedExpectedKWh
+			desvioPctStr := "0,0%"
+			if expVsAct.PairedExpectedKWh > 0 {
+				pct := (desvioKWh / expVsAct.PairedExpectedKWh) * 100.0
+				sign := ""
+				if pct > 0 {
+					sign = "+"
+				}
+				desvioPctStr = sign + formatPercent(pct)
+			}
+			desvioKWhStr := formatKWh(desvioKWh)
+			if desvioKWh > 0 {
+				desvioKWhStr = "+" + desvioKWhStr
+			}
+			pairedComparisonStr = fmt.Sprintf("%s medidos vs %s esperados (desvio: %s, %s)",
+				formatKWh(expVsAct.PairedMeasuredKWh),
+				formatKWh(expVsAct.PairedExpectedKWh),
+				desvioKWhStr,
+				desvioPctStr,
+			)
+		} else {
+			pairedComparisonStr = "Sem comparação disponível"
 		}
 
 		sb.WriteString("| Métrica | Valor |\n")
 		sb.WriteString("|---|---|\n")
 		sb.WriteString(fmt.Sprintf("| Geração medida | %s |\n", formatKWh(expVsAct.TotalMeasuredKWh)))
-		sb.WriteString(fmt.Sprintf("| Esperada nos dias válidos | %s |\n", formatKWh(expVsAct.TotalExpectedKWh)))
-		sb.WriteString(fmt.Sprintf("| Desvio | %s (%s) |\n", formatKWh(desvioKWh), desvioPctStr))
+		sb.WriteString(fmt.Sprintf("| Medida x esperada (%d dias-dispositivo com ambos) | %s |\n",
+			expVsAct.PairedDeviceDays, pairedComparisonStr))
 		sb.WriteString(fmt.Sprintf("| Energia estimada perdida | %s |\n\n", formatKWh(lostSummary.LostEnergyKWh)))
 
-		if lostSummary.LostEnergyKWh > 0 {
-			sb.WriteString(fmt.Sprintf("> [!NOTE]\n> A energia estimada perdida é uma estimativa calculada sobre %d dia(s)-dispositivo com medições ausentes ou inválidas.\n\n", lostSummary.DeviceDaysAffected))
+		if lostSummary.DeviceDaysAffected > 0 {
+			sb.WriteString(fmt.Sprintf("> Estimativa cobre %d de %d dias-dispositivo com problema; os demais não têm geração esperada.\n\n",
+				lostSummary.DeviceDaysWithExpected, lostSummary.DeviceDaysAffected))
 		}
 	}
 
@@ -233,7 +255,7 @@ func renderMarkdown(sb *strings.Builder, titleKind, escapedPlantName string, pla
 		for _, devQ := range dqSummary.Devices {
 			reasonsList := make([]string, 0, len(devQ.ReasonsCount))
 			for rName, count := range devQ.ReasonsCount {
-				reasonsList = append(reasonsList, fmt.Sprintf("%s (%d)", escapeMD(rName), count))
+				reasonsList = append(reasonsList, fmt.Sprintf("%s (%d)", friendlyReasonLabel(rName), count))
 			}
 			sort.Strings(reasonsList)
 			reasonsStr := strings.Join(reasonsList, ", ")
@@ -271,18 +293,17 @@ func renderMarkdown(sb *strings.Builder, titleKind, escapedPlantName string, pla
 
 		for _, rule := range rulesOrder {
 			alertsList := byRule[rule]
-			sb.WriteString(fmt.Sprintf("### Regra: `%s` (%d ocorrência(s))\n\n", escapeMD(rule), len(alertsList)))
+			sb.WriteString(fmt.Sprintf("### Regra: %s (%d ocorrência(s))\n\n", friendlyRuleLabel(rule), len(alertsList)))
 			sb.WriteString("| Título | Primeira data | Última data | Detectado em | Severidade | Status |\n")
 			sb.WriteString("|---|---|---|---|---|---|\n")
 			for _, a := range alertsList {
-				detectedAtStr := a.CreatedAt.In(loc).Format("2006-01-02 15:04")
 				sb.WriteString(fmt.Sprintf("| %s | %s | %s | %s | %s | %s |\n",
 					escapeMD(a.Title),
-					a.FirstDate,
-					a.LastDate,
-					detectedAtStr,
-					escapeMD(a.Severity),
-					escapeMD(a.Status),
+					formatDatePtBR(a.FirstDate),
+					formatDatePtBR(a.LastDate),
+					alertDetectedOn(a, loc),
+					friendlySeverityLabel(a.Severity),
+					friendlyStatusLabel(a.Status),
 				))
 			}
 			sb.WriteString("\n")
@@ -302,7 +323,7 @@ func renderMarkdown(sb *strings.Builder, titleKind, escapedPlantName string, pla
 		for _, devC := range cmpSummary.Devices {
 			ratioStr := "N/A"
 			if devC.RatioToPeerMedian != nil {
-				ratioStr = fmt.Sprintf("%.2fx", *devC.RatioToPeerMedian)
+				ratioStr = formatNumberPtBR(*devC.RatioToPeerMedian, 2)
 			}
 			sb.WriteString(fmt.Sprintf("| %s | %s | %s | %s |\n",
 				escapeMD(devC.DeviceName),
@@ -314,29 +335,29 @@ func renderMarkdown(sb *strings.Builder, titleKind, escapedPlantName string, pla
 		sb.WriteString("\n")
 	}
 
-	// Section 5: Previsão dos próximos dias (only when period ends within 3 days of today)
-	if diffDays <= 3 {
-		sb.WriteString("## 5. Previsão dos próximos dias\n\n")
-		if len(forecastPreds) == 0 {
-			sb.WriteString("Nenhuma previsão disponível para os próximos dias.\n\n")
-		} else {
-			byDate := make(map[string]float64)
-			var datesOrder []string
-			for _, p := range forecastPreds {
-				if _, exists := byDate[p.Date]; !exists {
-					datesOrder = append(datesOrder, p.Date)
-				}
-				byDate[p.Date] += p.KWhExpected
+	// Section 5: Previsão dos próximos dias
+	sb.WriteString("## 5. Previsão dos próximos dias\n\n")
+	if diffDays > 3 {
+		sb.WriteString("Previsão não aplicável para períodos históricos encerrados há mais de 3 dias.\n\n")
+	} else if len(forecastPreds) == 0 {
+		sb.WriteString("Nenhuma previsão disponível para os próximos dias.\n\n")
+	} else {
+		byDate := make(map[string]float64)
+		var datesOrder []string
+		for _, p := range forecastPreds {
+			if _, exists := byDate[p.Date]; !exists {
+				datesOrder = append(datesOrder, p.Date)
 			}
-			sort.Strings(datesOrder)
-
-			sb.WriteString("| Data | Geração esperada prevista |\n")
-			sb.WriteString("|---|---|\n")
-			for _, dStr := range datesOrder {
-				sb.WriteString(fmt.Sprintf("| %s | %s |\n", dStr, formatKWh(byDate[dStr])))
-			}
-			sb.WriteString("\n")
+			byDate[p.Date] += p.KWhExpected
 		}
+		sort.Strings(datesOrder)
+
+		sb.WriteString("| Data | Geração esperada prevista |\n")
+		sb.WriteString("|---|---|\n")
+		for _, dStr := range datesOrder {
+			sb.WriteString(fmt.Sprintf("| %s | %s |\n", formatDatePtBR(dStr), formatKWh(byDate[dStr])))
+		}
+		sb.WriteString("\n")
 	}
 
 	// Section 6: Modelo em uso
@@ -345,7 +366,7 @@ func renderMarkdown(sb *strings.Builder, titleKind, escapedPlantName string, pla
 		sb.WriteString("Nenhum modelo ativo configurado para esta planta.\n\n")
 	} else {
 		sb.WriteString(fmt.Sprintf("- **Modelo ativo:** %s (versão %s)\n", escapeMD(activeModel.Name), escapeMD(activeModel.Version)))
-		sb.WriteString(fmt.Sprintf("- **Ajustado em:** %s\n\n", activeModel.TrainedAt.In(loc).Format("2006-01-02 15:04")))
+		sb.WriteString(fmt.Sprintf("- **Ajustado em:** %s\n\n", activeModel.TrainedAt.In(loc).Format("02/01/2006 15:04")))
 
 		var metricsPayload map[string]any
 		_ = json.Unmarshal([]byte(activeModel.MetricsJSON), &metricsPayload)
@@ -375,9 +396,109 @@ func renderMarkdown(sb *strings.Builder, titleKind, escapedPlantName string, pla
 			sb.WriteString("\n")
 		}
 
-		sb.WriteString("> [!IMPORTANT]\n")
 		sb.WriteString("> Métricas calculadas com o clima observado do dia. Elas medem a geração esperada, não uma previsão feita com antecedência.\n\n")
 	}
+}
+
+var ruleLabels = map[string]string{
+	"stuck_value":         "Leitura travada",
+	"zero_generation":     "Geração zerada",
+	"implausible_reading": "Leitura implausível",
+	"plant_no_generation": "Usina sem geração",
+	"missing_data":        "Dados ausentes",
+	"peer_divergence":     "Divergência entre dispositivos",
+	"under_expected":      "Abaixo do esperado",
+	"gradual_loss":        "Perda gradual",
+	"stale_data":          "Sem dados recentes",
+	"device_offline":      "Sem comunicação",
+}
+
+func friendlyRuleLabel(code string) string {
+	if label, ok := ruleLabels[code]; ok {
+		return label
+	}
+	return escapeMD(code)
+}
+
+var reasonLabels = map[string]string{
+	"stuck_value":                "leitura travada",
+	"leitura_travada":            "leitura travada",
+	"zero_sequence":              "sequência de zeros",
+	"zero_run":                   "sequência de zeros",
+	"zero_with_peers":            "zero com pares gerando",
+	"zero_with_peers_generating": "zero com pares gerando",
+	"zero_without_evidence":      "zero sem evidência",
+	"zero_no_peer_evidence":      "zero sem evidência",
+	"implausible_value":          "valor implausível",
+	"implausible_high":           "valor implausível",
+	"implausible_negative":       "negativo",
+	"missing_value":              "valor ausente",
+	"negative":                   "negativo",
+	"missing_data":               "dados ausentes",
+	"dados_ausentes":             "dados ausentes",
+	"zero_generation":            "geração zerada",
+}
+
+func friendlyReasonLabel(code string) string {
+	if label, ok := reasonLabels[code]; ok {
+		return label
+	}
+	return escapeMD(code)
+}
+
+var severityLabels = map[string]string{
+	"warning":     "aviso",
+	"critical":    "crítico",
+	"info":        "informativo",
+	"aviso":       "aviso",
+	"crítico":     "crítico",
+	"informativo": "informativo",
+}
+
+func friendlySeverityLabel(code string) string {
+	if label, ok := severityLabels[code]; ok {
+		return label
+	}
+	return escapeMD(code)
+}
+
+var statusLabels = map[string]string{
+	"open":         "aberto",
+	"acknowledged": "reconhecido",
+	"resolved":     "resolvido",
+	"aberto":       "aberto",
+	"reconhecido":  "reconhecido",
+	"resolvido":    "resolvido",
+}
+
+func friendlyStatusLabel(code string) string {
+	if label, ok := statusLabels[code]; ok {
+		return label
+	}
+	return escapeMD(code)
+}
+
+func formatDatePtBR(iso string) string {
+	t, err := time.Parse(time.DateOnly, iso)
+	if err != nil {
+		return escapeMD(iso)
+	}
+	return t.Format("02/01/2006")
+}
+
+func alertDetectedOn(a store.Alert, loc *time.Location) string {
+	if a.EvidenceJSON != "" {
+		var ev map[string]any
+		if err := json.Unmarshal([]byte(a.EvidenceJSON), &ev); err == nil {
+			if dOn, ok := ev["detected_on"].(string); ok && dOn != "" {
+				return formatDatePtBR(dOn)
+			}
+		}
+	}
+	if a.FirstDate != "" {
+		return formatDatePtBR(a.FirstDate)
+	}
+	return a.CreatedAt.In(loc).Format("02/01/2006")
 }
 
 // escapeMD escapes Markdown and HTML special characters in provider text.

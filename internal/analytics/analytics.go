@@ -58,28 +58,36 @@ type ExpectedVsActualDay struct {
 
 // ExpectedVsActualSummary holds daily comparisons and totals on valid days.
 type ExpectedVsActualSummary struct {
-	PlantID          int64                 `json:"plant_id"`
-	DeviceID         *int64                `json:"device_id,omitempty"`
-	From             string                `json:"from"`
-	To               string                `json:"to"`
-	TotalMeasuredKWh float64               `json:"total_measured_kwh"`
-	TotalExpectedKWh float64               `json:"total_expected_kwh"`
-	Ratio            *float64              `json:"ratio"`
-	Days             []ExpectedVsActualDay `json:"days"`
+	PlantID             int64                 `json:"plant_id"`
+	DeviceID            *int64                `json:"device_id,omitempty"`
+	From                string                `json:"from"`
+	To                  string                `json:"to"`
+	TotalMeasuredKWh    float64               `json:"total_measured_kwh"`
+	TotalExpectedKWh    float64               `json:"total_expected_kwh"`
+	PairedMeasuredKWh   float64               `json:"paired_measured_kwh"`
+	PairedExpectedKWh   float64               `json:"paired_expected_kwh"`
+	PairedRatio         *float64              `json:"paired_ratio"`
+	PairedDeviceDays    int                   `json:"paired_device_days"`
+	UnpairedMeasuredKWh float64               `json:"unpaired_measured_kwh"`
+	UnpairedDeviceDays  int                   `json:"unpaired_device_days"`
+	Ratio               *float64              `json:"ratio"`
+	Days                []ExpectedVsActualDay `json:"days"`
 }
 
 // LostEnergySummary estimates generation lost due to missing or faulty readings.
 type LostEnergySummary struct {
-	PlantID            int64   `json:"plant_id"`
-	From               string  `json:"from"`
-	To                 string  `json:"to"`
-	LostEnergyKWh      float64 `json:"lost_energy_kwh"`
-	DaysCovered        int     `json:"days_covered"`
-	DevicesCovered     int     `json:"devices_covered"`
-	DeviceDaysAffected int     `json:"device_days_affected"`
-	TotalDeviceDays    int     `json:"total_device_days"`
-	IsEstimate         bool    `json:"is_estimate"`
-	Label              string  `json:"label"`
+	PlantID                   int64   `json:"plant_id"`
+	From                      string  `json:"from"`
+	To                        string  `json:"to"`
+	LostEnergyKWh             float64 `json:"lost_energy_kwh"`
+	DaysCovered               int     `json:"days_covered"`
+	DevicesCovered            int     `json:"devices_covered"`
+	DeviceDaysAffected        int     `json:"device_days_affected"`
+	DeviceDaysWithExpected    int     `json:"device_days_with_expected"`
+	DeviceDaysWithoutExpected int     `json:"device_days_without_expected"`
+	TotalDeviceDays           int     `json:"total_device_days"`
+	IsEstimate                bool    `json:"is_estimate"`
+	Label                     string  `json:"label"`
 }
 
 // DeviceDataQuality summarizes quality classification for a single device.
@@ -412,17 +420,36 @@ func ExpectedVsActual(ctx context.Context, st *store.Store, plantID int64, devic
 	}
 
 	days := make([]ExpectedVsActualDay, len(dates))
-	var totalMeasured, totalExpectedOnOK float64
+	var totalMeasured float64
+	var pairedMeasured, pairedExpected float64
+	var pairedDeviceDays int
+	var unpairedMeasured float64
+	var unpairedDeviceDays int
 
 	for i, dStr := range dates {
 		var dayExpected float64
-		for _, d := range devices {
-			dayExpected += predsMap[d.ID][dStr]
-		}
 
 		if deviceID != nil {
 			dev := devices[0]
 			r, exists := byDevDate[dev.ID][dStr]
+			isOK := exists && r.Value != nil && r.Quality == domain.QualityOK
+
+			if isOK {
+				val := *r.Value
+				totalMeasured += val
+
+				exp, hasExp := predsMap[dev.ID][dStr]
+				if hasExp {
+					dayExpected = exp
+					pairedMeasured += val
+					pairedExpected += exp
+					pairedDeviceDays++
+				} else {
+					unpairedMeasured += val
+					unpairedDeviceDays++
+				}
+			}
+
 			day := ExpectedVsActualDay{
 				Date:        dStr,
 				ExpectedKWh: dayExpected,
@@ -434,11 +461,9 @@ func ExpectedVsActual(ctx context.Context, st *store.Store, plantID int64, devic
 			} else {
 				day.Quality = r.Quality
 				day.QualityReason = r.QualityReason
-				if r.Quality == domain.QualityOK {
+				if isOK {
 					val := *r.Value
 					day.MeasuredKWh = &val
-					totalMeasured += val
-					totalExpectedOnOK += dayExpected
 				}
 			}
 			days[i] = day
@@ -450,28 +475,41 @@ func ExpectedVsActual(ctx context.Context, st *store.Store, plantID int64, devic
 
 			for _, d := range devices {
 				r, exists := byDevDate[d.ID][dStr]
-				if !exists || r.Value == nil {
-					numMissing++
-					if firstReason == "" {
-						firstReason = "dados ausentes"
+				isOK := exists && r.Value != nil && r.Quality == domain.QualityOK
+				if isOK {
+					numOK++
+					val := *r.Value
+					measuredSum += val
+					totalMeasured += val
+
+					exp, hasExp := predsMap[d.ID][dStr]
+					if hasExp {
+						dayExpected += exp
+						pairedMeasured += val
+						pairedExpected += exp
+						pairedDeviceDays++
+					} else {
+						unpairedMeasured += val
+						unpairedDeviceDays++
 					}
 				} else {
-					switch r.Quality {
-					case domain.QualityOK:
-						numOK++
-						measuredSum += *r.Value
-					case domain.QualitySuspect:
-						numSuspect++
+					if !exists || r.Value == nil {
+						numMissing++
+						if firstReason == "" {
+							firstReason = "dados ausentes"
+						}
+					} else {
+						switch r.Quality {
+						case domain.QualitySuspect:
+							numSuspect++
+						case domain.QualityInvalid:
+							numInvalid++
+						default:
+							numInvalid++
+						}
 						if firstReason == "" {
 							firstReason = r.QualityReason
 						}
-					case domain.QualityInvalid:
-						numInvalid++
-						if firstReason == "" {
-							firstReason = r.QualityReason
-						}
-					default:
-						numInvalid++
 					}
 				}
 			}
@@ -485,8 +523,6 @@ func ExpectedVsActual(ctx context.Context, st *store.Store, plantID int64, devic
 				day.Quality = domain.QualityOK
 				val := measuredSum
 				day.MeasuredKWh = &val
-				totalMeasured += val
-				totalExpectedOnOK += dayExpected
 			} else if numInvalid > 0 {
 				day.Quality = domain.QualityInvalid
 				day.QualityReason = firstReason
@@ -503,17 +539,23 @@ func ExpectedVsActual(ctx context.Context, st *store.Store, plantID int64, devic
 	}
 
 	summary := ExpectedVsActualSummary{
-		PlantID:          plantID,
-		DeviceID:         deviceID,
-		From:             from,
-		To:               to,
-		TotalMeasuredKWh: totalMeasured,
-		TotalExpectedKWh: totalExpectedOnOK,
-		Days:             days,
+		PlantID:             plantID,
+		DeviceID:            deviceID,
+		From:                from,
+		To:                  to,
+		TotalMeasuredKWh:    totalMeasured,
+		TotalExpectedKWh:    pairedExpected,
+		PairedMeasuredKWh:   pairedMeasured,
+		PairedExpectedKWh:   pairedExpected,
+		PairedDeviceDays:    pairedDeviceDays,
+		UnpairedMeasuredKWh: unpairedMeasured,
+		UnpairedDeviceDays:  unpairedDeviceDays,
+		Days:                days,
 	}
 
-	if totalExpectedOnOK > 0 {
-		r := totalMeasured / totalExpectedOnOK
+	if pairedDeviceDays > 0 && pairedExpected > 0 {
+		r := pairedMeasured / pairedExpected
+		summary.PairedRatio = &r
 		summary.Ratio = &r
 	}
 
@@ -549,8 +591,9 @@ func LostEnergy(ctx context.Context, st *store.Store, plantID int64, from, to st
 
 	var lostKWh float64
 	var deviceDaysAffected int
+	var deviceDaysWithExpected int
+	var deviceDaysWithoutExpected int
 	affectedDays := make(map[string]bool)
-	affectedDevs := make(map[int64]bool)
 
 	for _, d := range devices {
 		for _, dStr := range dates {
@@ -559,23 +602,29 @@ func LostEnergy(ctx context.Context, st *store.Store, plantID int64, from, to st
 			if !isOK {
 				deviceDaysAffected++
 				affectedDays[dStr] = true
-				affectedDevs[d.ID] = true
-				lostKWh += predsMap[d.ID][dStr]
+				if exp, hasExp := predsMap[d.ID][dStr]; hasExp {
+					lostKWh += exp
+					deviceDaysWithExpected++
+				} else {
+					deviceDaysWithoutExpected++
+				}
 			}
 		}
 	}
 
 	return LostEnergySummary{
-		PlantID:            plantID,
-		From:               from,
-		To:                 to,
-		LostEnergyKWh:      lostKWh,
-		DaysCovered:        len(affectedDays),
-		DevicesCovered:     len(devices),
-		DeviceDaysAffected: deviceDaysAffected,
-		TotalDeviceDays:    len(devices) * len(dates),
-		IsEstimate:         true,
-		Label:              "Estimativa baseada no modelo ativo de geração esperada",
+		PlantID:                   plantID,
+		From:                      from,
+		To:                        to,
+		LostEnergyKWh:             lostKWh,
+		DaysCovered:               len(affectedDays),
+		DevicesCovered:            len(devices),
+		DeviceDaysAffected:        deviceDaysAffected,
+		DeviceDaysWithExpected:    deviceDaysWithExpected,
+		DeviceDaysWithoutExpected: deviceDaysWithoutExpected,
+		TotalDeviceDays:           len(devices) * len(dates),
+		IsEstimate:                true,
+		Label:                     "Estimativa baseada no modelo ativo de geração esperada",
 	}, nil
 }
 
@@ -699,19 +748,23 @@ func CompareDevices(ctx context.Context, st *store.Store, plantID int64, from, t
 		return CompareDevicesSummary{}, fmt.Errorf("obter previsões ativas: %w", err)
 	}
 
-	// 1. Find fair days where EVERY compared device is ok
+	// 1. Find fair days where EVERY compared device is ok and has an expected value
 	var fairDays []string
 	if len(devices) > 0 {
 		for _, dStr := range dates {
-			allOK := true
+			allOKAndHasExp := true
 			for _, d := range devices {
 				r, exists := byDevDate[d.ID][dStr]
 				if !exists || r.Value == nil || r.Quality != domain.QualityOK {
-					allOK = false
+					allOKAndHasExp = false
+					break
+				}
+				if _, hasExp := predsMap[d.ID][dStr]; !hasExp {
+					allOKAndHasExp = false
 					break
 				}
 			}
-			if allOK {
+			if allOKAndHasExp {
 				fairDays = append(fairDays, dStr)
 			}
 		}

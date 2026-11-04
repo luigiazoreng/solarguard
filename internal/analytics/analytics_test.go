@@ -521,3 +521,161 @@ func TestAnalytics_GranularityMonth(t *testing.T) {
 		t.Errorf("Feb point mismatch: %+v", gen.Points[1])
 	}
 }
+
+// 9. ExpectedVsActual and CompareDevices must pair per device-day.
+// TestExpectedTotalsArePaired with hand-computed values, including a device with no prediction
+// for the first days and a device-day not ok.
+func TestExpectedTotalsArePaired(t *testing.T) {
+	st, ctx := setupTestDB(t)
+	tz := "America/Sao_Paulo"
+	plant, devs := createTestPlant(t, ctx, st, "PlantPairing", tz, "D1", "D2")
+	d1, d2 := devs[0], devs[1]
+
+	mrun, _ := st.UpsertModelRun(ctx, store.ModelRun{
+		Name:      "ridge",
+		Version:   "v1",
+		PlantID:   plant.ID,
+		TrainedAt: time.Now(),
+		Active:    true,
+	})
+
+	// Predictions:
+	// D1 has NO prediction on Day 1 (2026-08-01)
+	// D1 has prediction on Day 2 (2026-08-02): 10.0 kWh
+	// D1 has prediction on Day 3 (2026-08-03): 15.0 kWh
+	// D2 has prediction on Day 1 (2026-08-01): 20.0 kWh
+	// D2 has prediction on Day 2 (2026-08-02): 20.0 kWh
+	// D2 has prediction on Day 3 (2026-08-03): 20.0 kWh
+	_ = st.UpsertPredictions(ctx, []store.Prediction{
+		{DeviceID: d1.ID, Date: "2026-08-02", ModelRunID: mrun.ID, KWhExpected: 10.0},
+		{DeviceID: d1.ID, Date: "2026-08-03", ModelRunID: mrun.ID, KWhExpected: 15.0},
+		{DeviceID: d2.ID, Date: "2026-08-01", ModelRunID: mrun.ID, KWhExpected: 20.0},
+		{DeviceID: d2.ID, Date: "2026-08-02", ModelRunID: mrun.ID, KWhExpected: 20.0},
+		{DeviceID: d2.ID, Date: "2026-08-03", ModelRunID: mrun.ID, KWhExpected: 20.0},
+	})
+
+	// Readings:
+	// Day 1 (2026-08-01):
+	//   D1: ok, 12.0 kWh (unpaired: ok reading, but NO prediction)
+	//   D2: ok, 18.0 kWh (paired with 20.0 expected)
+	// Day 2 (2026-08-02):
+	//   D1: ok, 10.0 kWh (paired with 10.0 expected)
+	//   D2: NOT OK: suspect, 0.0 kWh (not paired! device not ok)
+	// Day 3 (2026-08-03):
+	//   D1: ok, 14.0 kWh (paired with 15.0 expected)
+	//   D2: ok, 22.0 kWh (paired with 20.0 expected)
+	insertDailyReading(t, ctx, st, d1.ID, tz, "2026-08-01", floatPtr(12.0), domain.QualityOK, "")
+	insertDailyReading(t, ctx, st, d2.ID, tz, "2026-08-01", floatPtr(18.0), domain.QualityOK, "")
+
+	insertDailyReading(t, ctx, st, d1.ID, tz, "2026-08-02", floatPtr(10.0), domain.QualityOK, "")
+	insertDailyReading(t, ctx, st, d2.ID, tz, "2026-08-02", floatPtr(0.0), domain.QualitySuspect, "zero_generation")
+
+	insertDailyReading(t, ctx, st, d1.ID, tz, "2026-08-03", floatPtr(14.0), domain.QualityOK, "")
+	insertDailyReading(t, ctx, st, d2.ID, tz, "2026-08-03", floatPtr(22.0), domain.QualityOK, "")
+
+	res, err := analytics.ExpectedVsActual(ctx, st, plant.ID, nil, "2026-08-01", "2026-08-03")
+	if err != nil {
+		t.Fatalf("ExpectedVsActual: %v", err)
+	}
+
+	// Hand-computed paired device-days:
+	// - D2 Day 1: m=18.0, e=20.0
+	// - D1 Day 2: m=10.0, e=10.0
+	// - D1 Day 3: m=14.0, e=15.0
+	// - D2 Day 3: m=22.0, e=20.0
+	// Paired totals:
+	// PairedMeasuredKWh = 18.0 + 10.0 + 14.0 + 22.0 = 64.0 kWh
+	// PairedExpectedKWh = 20.0 + 10.0 + 15.0 + 20.0 = 65.0 kWh
+	// PairedDeviceDays = 4
+	// PairedRatio = 64.0 / 65.0 = 0.984615...
+	// Unpaired (ok reading with no prediction):
+	// - D1 Day 1: m=12.0 kWh, e=0
+	// UnpairedMeasuredKWh = 12.0 kWh
+	// UnpairedDeviceDays = 1
+	// Total measured on all ok device-days = 64.0 + 12.0 = 76.0 kWh
+	if res.PairedDeviceDays != 4 {
+		t.Errorf("PairedDeviceDays = %d, want 4", res.PairedDeviceDays)
+	}
+	if !almostEqual(res.PairedMeasuredKWh, 64.0, 1e-4) {
+		t.Errorf("PairedMeasuredKWh = %f, want 64.0", res.PairedMeasuredKWh)
+	}
+	if !almostEqual(res.PairedExpectedKWh, 65.0, 1e-4) {
+		t.Errorf("PairedExpectedKWh = %f, want 65.0", res.PairedExpectedKWh)
+	}
+	if res.PairedRatio == nil || !almostEqual(*res.PairedRatio, 64.0/65.0, 1e-4) {
+		t.Errorf("PairedRatio = %v, want %f", res.PairedRatio, 64.0/65.0)
+	}
+	if !almostEqual(res.UnpairedMeasuredKWh, 12.0, 1e-4) {
+		t.Errorf("UnpairedMeasuredKWh = %f, want 12.0", res.UnpairedMeasuredKWh)
+	}
+	if res.UnpairedDeviceDays != 1 {
+		t.Errorf("UnpairedDeviceDays = %d, want 1", res.UnpairedDeviceDays)
+	}
+	if !almostEqual(res.TotalMeasuredKWh, 76.0, 1e-4) {
+		t.Errorf("TotalMeasuredKWh = %f, want 76.0", res.TotalMeasuredKWh)
+	}
+
+	// Day 2 check: D2 was not ok, so Day 2 dayExpected must NOT include D2's prediction!
+	// D1 expected on Day 2 is 10.0. D2 is not ok, so dayExpected must be 10.0 (not 30.0).
+	if len(res.Days) >= 2 {
+		day2 := res.Days[1]
+		if !almostEqual(day2.ExpectedKWh, 10.0, 1e-4) {
+			t.Errorf("Day 2 ExpectedKWh = %f, want 10.0 (excluding device that was not ok)", day2.ExpectedKWh)
+		}
+	}
+}
+
+// 10. TestLostEnergySeparatesDaysWithoutExpected: separates device-days not ok or missing
+// WITH an expected value from those WITHOUT one.
+func TestLostEnergySeparatesDaysWithoutExpected(t *testing.T) {
+	st, ctx := setupTestDB(t)
+	tz := "America/Sao_Paulo"
+	plant, devs := createTestPlant(t, ctx, st, "PlantLostSep", tz, "D1")
+	d1 := devs[0]
+
+	mrun, _ := st.UpsertModelRun(ctx, store.ModelRun{
+		Name:      "ridge",
+		Version:   "v1",
+		PlantID:   plant.ID,
+		TrainedAt: time.Now(),
+		Active:    true,
+	})
+
+	// Predictions:
+	// Day 1 (2026-09-01): NO PREDICTION
+	// Day 2 (2026-09-02): 15.0 kWh expected
+	// Day 3 (2026-09-03): 12.0 kWh expected
+	_ = st.UpsertPredictions(ctx, []store.Prediction{
+		{DeviceID: d1.ID, Date: "2026-09-02", ModelRunID: mrun.ID, KWhExpected: 15.0},
+		{DeviceID: d1.ID, Date: "2026-09-03", ModelRunID: mrun.ID, KWhExpected: 12.0},
+	})
+
+	// Readings:
+	// Day 1: suspect, no prediction (problematic WITHOUT expected)
+	// Day 2: missing (no reading in DB), has 15.0 expected (problematic WITH expected)
+	// Day 3: ok (not problematic)
+	insertDailyReading(t, ctx, st, d1.ID, tz, "2026-09-01", floatPtr(5.0), domain.QualitySuspect, "zero_generation")
+	insertDailyReading(t, ctx, st, d1.ID, tz, "2026-09-03", floatPtr(12.0), domain.QualityOK, "")
+
+	lost, err := analytics.LostEnergy(ctx, st, plant.ID, "2026-09-01", "2026-09-03")
+	if err != nil {
+		t.Fatalf("LostEnergy: %v", err)
+	}
+
+	// Total problematic device-days: 2
+	// Problematic with expected: 1 (Day 2)
+	// Problematic without expected: 1 (Day 1)
+	// Lost energy sum: 15.0 kWh
+	if lost.DeviceDaysAffected != 2 {
+		t.Errorf("DeviceDaysAffected = %d, want 2", lost.DeviceDaysAffected)
+	}
+	if lost.DeviceDaysWithExpected != 1 {
+		t.Errorf("DeviceDaysWithExpected = %d, want 1", lost.DeviceDaysWithExpected)
+	}
+	if lost.DeviceDaysWithoutExpected != 1 {
+		t.Errorf("DeviceDaysWithoutExpected = %d, want 1", lost.DeviceDaysWithoutExpected)
+	}
+	if !almostEqual(lost.LostEnergyKWh, 15.0, 1e-4) {
+		t.Errorf("LostEnergyKWh = %f, want 15.0", lost.LostEnergyKWh)
+	}
+}

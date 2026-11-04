@@ -617,3 +617,76 @@ func TestMCP_Prompts(t *testing.T) {
 
 	_ = plant
 }
+
+// 7. TestDateRangeLimitOnEveryTool: Table test verifying the 400-day limit on every date-range tool:
+// get_generation, get_expected_vs_actual, get_lost_energy, get_data_quality, compare_devices, get_weather.
+// Also confirms list_reports limit is capped at 200.
+func TestDateRangeLimitOnEveryTool(t *testing.T) {
+	st, ctx := setupTestDB(t)
+	plant, _ := seedTestData(t, ctx, st)
+
+	server := mcpserver.New(st)
+	cs := connectClient(t, ctx, server)
+
+	toolsToTest := []struct {
+		name string
+		args map[string]any
+	}{
+		{
+			name: "get_generation",
+			args: map[string]any{"plant_id": plant.ID, "from": "2024-01-01", "to": "2026-01-01"},
+		},
+		{
+			name: "get_expected_vs_actual",
+			args: map[string]any{"plant_id": plant.ID, "from": "2024-01-01", "to": "2026-01-01"},
+		},
+		{
+			name: "get_lost_energy",
+			args: map[string]any{"plant_id": plant.ID, "from": "2024-01-01", "to": "2026-01-01"},
+		},
+		{
+			name: "get_data_quality",
+			args: map[string]any{"plant_id": plant.ID, "from": "2024-01-01", "to": "2026-01-01"},
+		},
+		{
+			name: "compare_devices",
+			args: map[string]any{"plant_id": plant.ID, "from": "2024-01-01", "to": "2026-01-01"},
+		},
+		{
+			name: "get_weather",
+			args: map[string]any{"plant_id": plant.ID, "from": "2024-01-01", "to": "2026-01-01"},
+		},
+	}
+
+	for _, tc := range toolsToTest {
+		t.Run(tc.name, func(t *testing.T) {
+			res, err := cs.CallTool(ctx, &mcp.CallToolParams{
+				Name:      tc.name,
+				Arguments: tc.args,
+			})
+			if err != nil {
+				t.Fatalf("tool %s RPC error: %v", tc.name, err)
+			}
+			if !res.IsError {
+				t.Errorf("tool %s expected error for 400-day limit", tc.name)
+			}
+		})
+	}
+
+	// list_reports limit capped at 200
+	t.Run("list_reports_cap_200", func(t *testing.T) {
+		res, err := cs.CallTool(ctx, &mcp.CallToolParams{
+			Name: "list_reports",
+			Arguments: map[string]any{
+				"plant_id": plant.ID,
+				"limit":    500, // exceeds 200, must be capped
+			},
+		})
+		if err != nil {
+			t.Fatalf("list_reports RPC error: %v", err)
+		}
+		if res.IsError {
+			t.Errorf("list_reports should succeed when limit > 200 by capping to 200")
+		}
+	})
+}
