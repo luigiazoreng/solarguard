@@ -1,0 +1,16 @@
+# Dados locais e segredos: nunca versionar
+/data/
+*.db
+*.db-wal
+*.db-shm
+.env
+*.xlsx
+*.docx
+!internal/**/testdata/*.xlsx
+
+# Build e ferramentas
+/bin/
+/.worktrees/
+ml/.venv/
+__pycache__/
+*.pyc
