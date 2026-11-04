@@ -789,3 +789,15 @@ func TestDeviceListReadsLostInEveryFormat(t *testing.T) {
 		})
 	}
 }
+
+func TestLatin1ResponseKeepsAccents(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte("{\"error_code\":0,\"error_msg\":\"\",\"data\":{\"count\":1,\"plants\":[{\"plant_id\":1,\"name\":\"Usina Jos\xe9\"}]}}"))
+	}))
+	defer server.Close()
+	c := New(server.URL, "t", server.Client())
+	res, err := c.Execute(context.Background(), connector.Task{Endpoint: "plant/list", Params: map[string]string{"page": "1", "perpage": "100"}})
+	if err != nil || len(res.Plants) != 1 || res.Plants[0].Name != "Usina José" {
+		t.Fatalf("plants=%+v err=%v", res.Plants, err)
+	}
+}

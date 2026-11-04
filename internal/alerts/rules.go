@@ -272,7 +272,8 @@ func evaluatePlantNoGeneration(plantID int64, devices []domain.Device, byDate ma
 			nonPlantDevs = append(nonPlantDevs, d)
 		}
 	}
-	if len(nonPlantDevs) == 0 {
+	// With one device, zero_generation already reports the same event.
+	if len(nonPlantDevs) < 2 {
 		return nil
 	}
 
