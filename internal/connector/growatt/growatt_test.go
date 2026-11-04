@@ -715,3 +715,77 @@ func TestDayEnergyNullProducesNoReading(t *testing.T) {
 		t.Fatalf("expected 0 readings for empty energy entry, got %d", len(res2.Readings))
 	}
 }
+
+func TestOnlyMinHistoryUsesPost(t *testing.T) {
+	var method, contentType, form string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method, contentType = r.Method, r.Header.Get("Content-Type")
+		_ = r.ParseForm()
+		form = r.PostForm.Get("tlx_sn")
+		w.Write([]byte(`{"error_code":0,"error_msg":"","data":{"count":142,"datas":[{"time":"2026-11-03 16:48:43","eacToday":47.20000076293945},{"time":"2026-11-03 16:43:43","eacToday":47.1}]}}`))
+	}))
+	defer server.Close()
+	c := New(server.URL, "secret-token-123", server.Client())
+	tasks := c.DailyTasks(domain.Plant{ExternalID: "10", Timezone: "America/Sao_Paulo"}, []domain.Device{{ExternalID: "MIN1", Kind: "min"}}, "2026-11-03")
+	if len(tasks) != 1 || tasks[0].Endpoint != "device/tlx/tlx_data" {
+		t.Fatalf("tasks = %+v", tasks)
+	}
+	res, err := c.Execute(context.Background(), tasks[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if method != http.MethodPost || contentType != "application/x-www-form-urlencoded" || form != "MIN1" {
+		t.Fatalf("method=%s contentType=%s form=%q", method, contentType, form)
+	}
+	if len(res.Readings) != 1 || res.Readings[0].Value == nil || *res.Readings[0].Value != 47.20000076293945 {
+		t.Fatalf("readings = %+v", res.Readings)
+	}
+	r := res.Readings[0]
+	if r.DeviceExternalID != "MIN1" || r.PlantExternalID != "10" || r.RawValue != "47.20000076293945" {
+		t.Fatalf("reading = %+v", r)
+	}
+	if want := time.Date(2026, 11, 3, 3, 0, 0, 0, time.UTC); !r.PeriodStart.Equal(want) {
+		t.Fatalf("period start %s", r.PeriodStart)
+	}
+	if len(readOnlyPostEndpoints) != 1 {
+		t.Fatalf("every POST must be reviewed as read-only: %v", readOnlyPostEndpoints)
+	}
+}
+
+func TestMinDayWithoutRecordsProducesNoReading(t *testing.T) {
+	for name, body := range map[string]string{
+		"empty":     `{"error_code":0,"error_msg":"","data":{"count":0,"datas":[]}}`,
+		"other day": `{"error_code":0,"error_msg":"","data":{"datas":[{"time":"2026-11-02 16:00:00","eacToday":5}]}}`,
+		"null":      `{"error_code":0,"error_msg":"","data":{"datas":[{"time":"2026-11-03 16:00:00","eacToday":null}]}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte(body)) }))
+			defer server.Close()
+			c := New(server.URL, "t", server.Client())
+			res, err := c.Execute(context.Background(), minDayTask("MIN1", "10", "America/Sao_Paulo", "2026-11-03"))
+			if err != nil || len(res.Readings) != 0 {
+				t.Fatalf("readings=%+v err=%v", res.Readings, err)
+			}
+		})
+	}
+}
+
+func TestDeviceListReadsLostInEveryFormat(t *testing.T) {
+	for raw, wantOnline := range map[string]bool{`true`: false, `false`: true, `1`: false, `0`: true, `"1"`: false} {
+		t.Run(raw, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Write([]byte(`{"error_code":0,"error_msg":"","data":{"count":1,"devices":[{"device_sn":"D1","type":1,"lost":` + raw + `,"last_update_time":"2026-06-25 09:34:00"}]}}`))
+			}))
+			defer server.Close()
+			c := New(server.URL, "t", server.Client())
+			res, err := c.Execute(context.Background(), connector.Task{Endpoint: "device/list", Params: map[string]string{"plant_id": "1", "page": "1", "perpage": "100"}})
+			if err != nil || len(res.Devices) != 1 {
+				t.Fatalf("devices=%+v err=%v", res.Devices, err)
+			}
+			d := res.Devices[0]
+			if d.Online == nil || *d.Online != wantOnline || d.LastSeenLocal != "2026-06-25 09:34:00" {
+				t.Fatalf("device = %+v", d)
+			}
+		})
+	}
+}

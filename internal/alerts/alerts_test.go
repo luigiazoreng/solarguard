@@ -1395,3 +1395,57 @@ func TestGradualLossRequiresPersistence(t *testing.T) {
 		t.Fatalf("a short dip must not alert, got %d", n)
 	}
 }
+
+func TestDeviceOfflineFiresAndResolvesWhenBackOnline(t *testing.T) {
+	st, ctx := setupTestDB(t)
+	tz := "America/Sao_Paulo"
+	plant, devs := createTestPlant(t, ctx, st, "Plant-Off", tz, "D1", "D2")
+	offline, online := false, true
+	lastSeen := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	devs[0].Online, devs[0].LastSeenAt = &offline, &lastSeen
+	if _, err := st.UpsertDevice(ctx, devs[0]); err != nil {
+		t.Fatal(err)
+	}
+	devs[1].Online = &online
+	if _, err := st.UpsertDevice(ctx, devs[1]); err != nil {
+		t.Fatal(err)
+	}
+	now := func() time.Time { return time.Date(2026, 11, 4, 15, 0, 0, 0, time.UTC) }
+
+	sum, err := alerts.Run(ctx, st, plant.ID, alerts.Options{Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.CountsByDevice["D1"]["device_offline"] != 1 || sum.CountsByRule["device_offline"] != 1 {
+		t.Fatalf("counts = %+v", sum.CountsByDevice)
+	}
+	var found store.Alert
+	for _, a := range sum.Alerts {
+		if a.Rule == "device_offline" {
+			found = a
+		}
+	}
+	if found.FirstDate != "2026-06-25" || found.LastDate != "2026-11-04" || found.Severity != "critical" || found.Status != "open" {
+		t.Fatalf("alert = %+v", found)
+	}
+
+	replay, err := alerts.Run(ctx, st, plant.ID, alerts.Options{Now: now, AsOf: "2026-07-01"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replay.CountsByRule["device_offline"] != 0 {
+		t.Fatalf("replay evaluated the present state: %+v", replay.CountsByRule)
+	}
+
+	devs[0].Online = &online
+	if _, err := st.UpsertDevice(ctx, devs[0]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := alerts.Run(ctx, st, plant.ID, alerts.Options{Now: now}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.GetAlert(ctx, found.ID)
+	if err != nil || got.Status != "resolved" {
+		t.Fatalf("alert = %+v err=%v", got, err)
+	}
+}

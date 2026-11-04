@@ -7,6 +7,16 @@ Fontes: coleção pública no Postman e testes de leitura em `test.growatt.com` 
 - **Envelope:** `{"data": ..., "error_code": 0, "error_msg": ""}`. Em erro, `data` pode ser string.
 - **HTTP 200 não indica sucesso:** sempre checar `error_code`.
 
+## Observado em produção (2026-11-04)
+
+- `lost` chega como **booleano**, não como número.
+- `device/list` pode listar o mesmo inversor duas vezes, com tipos diferentes (1 e 4), com `count` igual a 1.
+- `device/inverter/day_energy` confere com `plant/energy` no inversor de tipo 1 e retorna **0 falso em inversores MIN (tipo 7)**. Para MIN, usar `POST /v1/device/tlx/tlx_data`: os registros vêm do mais novo para o mais antigo, e o `eacToday` do primeiro registro é o total do dia.
+- O limite também aceita chamadas em sequência para outros parâmetros: 35 chamadas de `day_energy` em 8 segundos, sem `10012`. Nos endpoints de MIN, o `10012` apareceu mesmo sem repetir os parâmetros, então pode haver limite por dispositivo.
+- `/v1/plant/list` exige um token com permissão de API. Sem isso, toda chamada responde `10011`.
+- Carga histórica de 2026-01-01 a 2026-11-03: `day_energy` respondeu para todas as 307 datas nos inversores de tipo 1, e `tlx_data` só retornou os últimos 95 dias nos MIN. Para eles, coletar antes de perder dados.
+- Tipos sem verificação em produção: SPH, SPA e os demais. `day_energy` pode ter o mesmo problema neles.
+
 ## Limites
 
 - `10012 error_frequently_access`: uma chamada a cada 5 minutos.
@@ -34,4 +44,5 @@ Fontes: coleção pública no Postman e testes de leitura em `test.growatt.com` 
 - `device/list` retorna `lost` (0 online, 1 desconectado) e `status` por tipo. No tipo 1, `3` é falha.
 - A unidade de `day_energy.data` não está documentada. Presume-se kWh, a confirmar com dados reais.
 - O servidor de testes não tem inversores cadastrados: `day_energy` só é testável com token de produção.
+- `POST /v1/device/tlx/tlx_data` é o único POST usado, e só lê dados.
 - Alarmes não estão na coleção. Um wrapper de terceiros usa `GET /v1/device/inverter/alarm`, não verificado.
