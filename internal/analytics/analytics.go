@@ -564,6 +564,15 @@ func ExpectedVsActual(ctx context.Context, st *store.Store, plantID int64, devic
 
 // LostEnergy calculates estimated energy lost over device-days whose reading is not ok or is missing.
 func LostEnergy(ctx context.Context, st *store.Store, plantID int64, from, to string) (LostEnergySummary, error) {
+	return lostEnergy(ctx, st, plantID, nil, from, to)
+}
+
+// LostEnergyForDevice is LostEnergy restricted to one device of the plant.
+func LostEnergyForDevice(ctx context.Context, st *store.Store, plantID, deviceID int64, from, to string) (LostEnergySummary, error) {
+	return lostEnergy(ctx, st, plantID, &deviceID, from, to)
+}
+
+func lostEnergy(ctx context.Context, st *store.Store, plantID int64, deviceID *int64, from, to string) (LostEnergySummary, error) {
 	_, _, dates, err := validateDateRange(from, to)
 	if err != nil {
 		return LostEnergySummary{}, err
@@ -574,7 +583,7 @@ func LostEnergy(ctx context.Context, st *store.Store, plantID int64, from, to st
 		return LostEnergySummary{}, fmt.Errorf("planta %d: %w", plantID, err)
 	}
 
-	devices, err := getTargetDevices(ctx, st, plantID, nil)
+	devices, err := getTargetDevices(ctx, st, plantID, deviceID)
 	if err != nil {
 		return LostEnergySummary{}, err
 	}

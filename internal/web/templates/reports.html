@@ -1,0 +1,108 @@
+{{define "content"}}
+<div style="margin-bottom:20px;">
+  <h1 style="margin:0 0 4px 0;font-size:1.6rem;">Relatórios Operacionais</h1>
+  <p style="color:var(--text-muted);margin:0;">Análises consolidadas e pareceres de geração fotovoltaica</p>
+</div>
+
+{{if .ErrorMessage}}
+<div style="background:var(--warning-bg);color:var(--warning);border:1px solid var(--warning);padding:12px 16px;border-radius:6px;margin-bottom:20px;font-weight:500;">
+  ⚠️ {{.ErrorMessage}}
+</div>
+{{end}}
+
+<!-- Formulário para Gerar Relatório -->
+<div class="card" style="margin-bottom:24px;">
+  <h3 style="margin-top:0;margin-bottom:12px;font-size:1.1rem;">Gerar Novo Relatório</h3>
+  <form method="POST" action="/reports/generate" style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+
+    <div style="flex:1;min-width:180px;">
+      <label for="plant_id" style="display:block;font-size:0.8rem;color:var(--text-muted);margin-bottom:4px;">Usina</label>
+      <select id="plant_id" name="plant_id" class="form-control" required>
+        {{range .Plants}}
+        <option value="{{.ID}}">{{.Name}}</option>
+        {{end}}
+      </select>
+    </div>
+
+    <div style="flex:1;min-width:140px;">
+      <label for="kind" style="display:block;font-size:0.8rem;color:var(--text-muted);margin-bottom:4px;">Tipo</label>
+      <select id="kind" name="kind" class="form-control" required>
+        <option value="weekly">Semanal</option>
+        <option value="monthly">Mensal</option>
+        <option value="period">Período customizado</option>
+      </select>
+    </div>
+
+    <div style="flex:1;min-width:130px;">
+      <label for="from" style="display:block;font-size:0.8rem;color:var(--text-muted);margin-bottom:4px;">Data Inicial</label>
+      <input type="date" id="from" name="from" class="form-control" value="{{.DefaultFrom}}" required>
+    </div>
+
+    <div style="flex:1;min-width:130px;">
+      <label for="to" style="display:block;font-size:0.8rem;color:var(--text-muted);margin-bottom:4px;">Data Final</label>
+      <input type="date" id="to" name="to" class="form-control" value="{{.DefaultTo}}" required>
+    </div>
+
+    <div>
+      <button type="submit" class="btn">Gerar Relatório</button>
+    </div>
+  </form>
+</div>
+
+<!-- Tabela de Relatórios -->
+<h3 style="font-size:1.15rem;margin-bottom:8px;">Relatórios Gerados</h3>
+{{if eq (len .Reports) 0}}
+<div class="empty-state">
+  <h3>Nenhum relatório encontrado</h3>
+  <p>Gere um relatório acima ou via integração MCP para visualizar aqui.</p>
+</div>
+{{else}}
+<div class="table-container">
+  <table>
+    <thead>
+      <tr>
+        <th>Título</th>
+        <th>Usina</th>
+        <th>Período</th>
+        <th>Autor</th>
+        <th>Status</th>
+        <th>Criado em</th>
+        <th>Ações</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Reports}}
+      <tr>
+        <td style="font-weight:600;">
+          <a href="/reports/{{.Report.ID}}">{{.Report.Title}}</a>
+        </td>
+        <td>{{.PlantName}}</td>
+        <td>{{formatDate .Report.PeriodStart}} a {{formatDate .Report.PeriodEnd}}</td>
+        <td>
+          {{if eq .Report.Author "ai"}}
+            <span class="badge badge-info">IA</span>
+          {{else if eq .Report.Author "system"}}
+            <span class="badge badge-neutral">Sistema</span>
+          {{else}}
+            <span class="badge badge-success">Usuário</span>
+          {{end}}
+        </td>
+        <td>
+          {{if eq .Report.Status "draft"}}
+            <span class="badge badge-warning">Rascunho</span>
+          {{else}}
+            <span class="badge badge-success">Final</span>
+          {{end}}
+        </td>
+        <td>{{formatTime (makeTimePtr .Report.CreatedAt) "America/Sao_Paulo"}}</td>
+        <td>
+          <a href="/reports/{{.Report.ID}}" class="btn btn-secondary btn-sm">Abrir</a>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+{{end}}

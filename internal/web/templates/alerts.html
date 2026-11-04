@@ -1,0 +1,131 @@
+{{define "content"}}
+<div style="margin-bottom:20px;">
+  <h1 style="margin:0 0 4px 0;font-size:1.6rem;">Alertas e Incidentes</h1>
+  <p style="color:var(--text-muted);margin:0;">Indícios operacionais gerados por regras determinísticas</p>
+</div>
+
+<!-- Filtros -->
+<form method="GET" action="/alerts" class="filters-bar">
+  <div>
+    <label for="plant" style="display:block;font-size:0.8rem;color:var(--text-muted);margin-bottom:4px;">Usina</label>
+    <select id="plant" name="plant_id" class="form-control" data-autosubmit>
+      <option value="">Todas as usinas</option>
+      {{range .Plants}}
+      <option value="{{.ID}}" {{if eq $.FilterPlantID (printf "%d" .ID)}}selected{{end}}>{{.Name}}</option>
+      {{end}}
+    </select>
+  </div>
+
+  <div>
+    <label for="status" style="display:block;font-size:0.8rem;color:var(--text-muted);margin-bottom:4px;">Status</label>
+    <select id="status" name="status" class="form-control" data-autosubmit>
+      <option value="" {{if eq .FilterStatus ""}}selected{{end}}>Todos os status</option>
+      <option value="open" {{if eq .FilterStatus "open"}}selected{{end}}>Aberto</option>
+      <option value="ack" {{if eq .FilterStatus "ack"}}selected{{end}}>Reconhecido</option>
+      <option value="resolved" {{if eq .FilterStatus "resolved"}}selected{{end}}>Resolvido</option>
+    </select>
+  </div>
+
+  <div>
+    <label for="severity" style="display:block;font-size:0.8rem;color:var(--text-muted);margin-bottom:4px;">Severidade</label>
+    <select id="severity" name="severity" class="form-control" data-autosubmit>
+      <option value="" {{if eq .FilterSeverity ""}}selected{{end}}>Todas</option>
+      <option value="critical" {{if eq .FilterSeverity "critical"}}selected{{end}}>Crítico</option>
+      <option value="warning" {{if eq .FilterSeverity "warning"}}selected{{end}}>Aviso</option>
+      <option value="info" {{if eq .FilterSeverity "info"}}selected{{end}}>Informativo</option>
+    </select>
+  </div>
+
+  <div>
+    <label for="rule" style="display:block;font-size:0.8rem;color:var(--text-muted);margin-bottom:4px;">Regra</label>
+    <select id="rule" name="rule" class="form-control" data-autosubmit>
+      <option value="" {{if eq .FilterRule ""}}selected{{end}}>Todas as regras</option>
+      <option value="zero_generation" {{if eq .FilterRule "zero_generation"}}selected{{end}}>Geração zerada</option>
+      <option value="under_expected" {{if eq .FilterRule "under_expected"}}selected{{end}}>Abaixo do esperado</option>
+      <option value="implausible_reading" {{if eq .FilterRule "implausible_reading"}}selected{{end}}>Leitura implausível</option>
+      <option value="missing_data" {{if eq .FilterRule "missing_data"}}selected{{end}}>Dados ausentes</option>
+      <option value="stuck_value" {{if eq .FilterRule "stuck_value"}}selected{{end}}>Leitura travada</option>
+      <option value="plant_no_generation" {{if eq .FilterRule "plant_no_generation"}}selected{{end}}>Usina sem geração</option>
+      <option value="gradual_loss" {{if eq .FilterRule "gradual_loss"}}selected{{end}}>Perda gradual</option>
+      <option value="peer_divergence" {{if eq .FilterRule "peer_divergence"}}selected{{end}}>Divergência entre dispositivos</option>
+      <option value="stale_data" {{if eq .FilterRule "stale_data"}}selected{{end}}>Sem dados recentes</option>
+      <option value="device_offline" {{if eq .FilterRule "device_offline"}}selected{{end}}>Sem comunicação</option>
+    </select>
+  </div>
+</form>
+
+{{if eq (len .Alerts) 0}}
+<div class="empty-state">
+  <h3>Nenhum alerta encontrado</h3>
+  <p>Nenhum alerta corresponde aos filtros selecionados.</p>
+</div>
+{{else}}
+<div class="table-container">
+  <table>
+    <thead>
+      <tr>
+        <th>Título</th>
+        <th>Usina</th>
+        <th>Dispositivo</th>
+        <th>Severidade</th>
+        <th>Status</th>
+        <th>Período</th>
+        <th>Detectado em</th>
+        <th>Ações</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Alerts}}
+      <tr>
+        <td style="font-weight:600; white-space: normal; min-width: 200px;">
+          <a href="/alerts/{{.Alert.ID}}">{{.Alert.Title}}</a>
+        </td>
+        <td>{{.PlantName}}</td>
+        <td style="white-space: normal; min-width: 140px;">{{if .DeviceName}}{{.DeviceName}}{{else}}<span style="color:var(--text-muted);">Toda a usina</span>{{end}}</td>
+        <td>
+          {{if eq .Alert.Severity "critical"}}
+            <span class="badge badge-critical">Crítico</span>
+          {{else if eq .Alert.Severity "warning"}}
+            <span class="badge badge-warning">Aviso</span>
+          {{else}}
+            <span class="badge badge-info">Info</span>
+          {{end}}
+        </td>
+        <td>
+          {{if eq .Alert.Status "open"}}
+            <span class="badge badge-critical">Aberto</span>
+          {{else if eq .Alert.Status "ack"}}
+            <span class="badge badge-warning">Reconhecido</span>
+          {{else}}
+            <span class="badge badge-success">Resolvido</span>
+          {{end}}
+        </td>
+        <td>{{formatDate .Alert.FirstDate}} a {{formatDate .Alert.LastDate}}</td>
+        <td>{{.DetectedOn}}</td>
+        <td>
+          <a href="/alerts/{{.Alert.ID}}" class="btn btn-secondary btn-sm">Detalhes</a>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+
+<!-- Paginação simples -->
+<div style="display:flex;justify-content:space-between;align-items:center;">
+  <div>
+    {{if gt .Page 1}}
+    <a href="/alerts?page={{sub .Page 1}}&plant_id={{.FilterPlantID}}&status={{.FilterStatus}}&severity={{.FilterSeverity}}&rule={{.FilterRule}}" class="btn btn-secondary btn-sm">&larr; Anterior</a>
+    {{end}}
+  </div>
+  <div style="color:var(--text-muted);font-size:0.875rem;">
+    Página {{.Page}}
+  </div>
+  <div>
+    {{if .HasNextPage}}
+    <a href="/alerts?page={{add .Page 1}}&plant_id={{.FilterPlantID}}&status={{.FilterStatus}}&severity={{.FilterSeverity}}&rule={{.FilterRule}}" class="btn btn-secondary btn-sm">Próxima &rarr;</a>
+    {{end}}
+  </div>
+</div>
+{{end}}
+{{end}}
