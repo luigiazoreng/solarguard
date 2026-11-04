@@ -298,6 +298,14 @@ func Run(ctx context.Context, st *store.Store, plantID int64, opts Options) (Sum
 		}
 	}
 
+	// device_offline describes the present, so it is never evaluated in replay.
+	if opts.AsOf == "" {
+		if enabled, params := getRuleParams("device_offline"); enabled {
+			evaluatedRules["device_offline"] = true
+			allIncidents = append(allIncidents, evaluateDeviceOffline(plantID, devices, loc, todayStr, params)...)
+		}
+	}
+
 	// 9. stale_data
 	// Evaluated only when AsOf is empty, and skipped for sources of kind "file".
 	src, err := st.GetSource(ctx, plant.SourceID)
