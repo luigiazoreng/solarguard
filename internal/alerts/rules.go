@@ -878,6 +878,39 @@ func evaluateGradualLoss(plantID int64, dev domain.Device, days []gradualDay, pe
 	return incidents
 }
 
+// evaluateDeviceOffline flags devices the provider reports as disconnected. One
+// incident lasts from the last contact until today, and it resolves when the
+// device is reported online again. Being offline does not say why: the inverter
+// may be running while only its data logger is down.
+func evaluateDeviceOffline(plantID int64, devices []domain.Device, loc *time.Location, todayStr string, cfgParams map[string]any) []incident {
+	params := map[string]any{"resolve_after_days": getParamInt(cfgParams, "resolve_after_days", 3)}
+	var incidents []incident
+	for _, d := range devices {
+		if d.Kind == "plant" || d.Online == nil || *d.Online {
+			continue
+		}
+		first := todayStr
+		if d.LastSeenAt != nil {
+			first = d.LastSeenAt.In(loc).Format(time.DateOnly)
+		}
+		devID := d.ID
+		incidents = append(incidents, incident{
+			Rule:       "device_offline",
+			PlantID:    plantID,
+			DeviceID:   &devID,
+			DevName:    d.Name,
+			Severity:   "critical",
+			Title:      fmt.Sprintf("Sem comunicação com %s", d.Name),
+			FirstDate:  first,
+			LastDate:   todayStr,
+			DetectedOn: first,
+			NumDays:    daysBetween(first, todayStr) + 1,
+			Params:     params,
+		})
+	}
+	return incidents
+}
+
 func evaluateStaleData(plantID int64, plantNewestDate, todayStr, localYesterday string, cfgParams map[string]any) []incident {
 	if plantNewestDate == "" {
 		return nil

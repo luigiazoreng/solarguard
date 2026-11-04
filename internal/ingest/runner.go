@@ -173,6 +173,7 @@ func (r *Runner) Step(ctx context.Context) (bool, error) {
 			Name:       d.Name,
 			Kind:       d.Kind,
 			Online:     d.Online,
+			LastSeenAt: r.lastSeen(ctx, pID, d.LastSeenLocal),
 		})
 		if err != nil {
 			return handleFailure(fmt.Errorf("upsert device %s: %w", d.ExternalID, err), true)
@@ -264,6 +265,27 @@ func (r *Runner) Run(ctx context.Context) error {
 			}
 		}
 	}
+}
+
+// lastSeen converts a provider's local timestamp using the plant's time zone.
+// It returns nil when the value or the time zone is unknown.
+func (r *Runner) lastSeen(ctx context.Context, plantID int64, local string) *time.Time {
+	if local == "" {
+		return nil
+	}
+	plant, err := r.store.GetPlant(ctx, plantID)
+	if err != nil {
+		return nil
+	}
+	loc, err := time.LoadLocation(plant.Timezone)
+	if err != nil {
+		return nil
+	}
+	t, err := time.ParseInLocation(time.DateTime, local, loc)
+	if err != nil {
+		return nil
+	}
+	return &t
 }
 
 func sanitizeError(s string) string {

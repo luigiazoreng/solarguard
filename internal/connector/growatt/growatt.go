@@ -151,6 +151,10 @@ func (c *Connector) DailyTasks(plant domain.Plant, devices []domain.Device, date
 
 	tasks := make([]connector.Task, 0, len(eligibleDevices))
 	for _, dev := range eligibleDevices {
+		if dev.Kind == "min" {
+			tasks = append(tasks, minDayTask(dev.ExternalID, plant.ExternalID, tz, date))
+			continue
+		}
 		params := map[string]string{
 			"device_sn": dev.ExternalID,
 			"date":      date,
@@ -168,6 +172,29 @@ func (c *Connector) DailyTasks(plant domain.Plant, devices []domain.Device, date
 	return tasks
 }
 
+// minDayTask reads one day from a MIN inverter. In production day_energy returns
+// a false 0 for MIN inverters, while tlx_data returns records newest first, so
+// the first record's eacToday is the day's total and one record is enough.
+func minDayTask(sn, plantExternalID, tz, date string) connector.Task {
+	params := map[string]string{
+		"tlx_sn":      sn,
+		"start_date":  date,
+		"end_date":    date,
+		"timezone_id": tz,
+		"page":        "1",
+		"perpage":     "1",
+		"plant_id":    plantExternalID,
+		"timezone":    tz,
+	}
+	return connector.Task{
+		Endpoint:    "device/tlx/tlx_data",
+		Params:      params,
+		LimitKey:    MakeLimitKey("device/tlx/tlx_data", params),
+		MinInterval: 5 * time.Minute,
+		Priority:    10,
+	}
+}
+
 type apiEnvelope struct {
 	ErrorCode int             `json:"error_code"`
 	ErrorMsg  string          `json:"error_msg"`
@@ -183,9 +210,16 @@ var endpointAllowedParams = map[string][]string{
 	"plant/power":                {"plant_id", "date"},
 	"device/list":                {"plant_id", "page", "perpage"},
 	"device/inverter/day_energy": {"device_sn", "date"},
+	"device/tlx/tlx_data":        {"tlx_sn", "start_date", "end_date", "timezone_id", "page", "perpage"},
 }
 
-// Execute performs one provider call via HTTP GET.
+// readOnlyPostEndpoints lists the only calls sent with POST. The provider
+// requires POST for them, but they only read data. Every other call is a GET.
+var readOnlyPostEndpoints = map[string]bool{
+	"device/tlx/tlx_data": true,
+}
+
+// Execute performs one read-only provider call.
 func (c *Connector) Execute(ctx context.Context, task connector.Task) (connector.Result, error) {
 	relPath := strings.TrimPrefix(task.Endpoint, "/")
 	if !strings.HasPrefix(relPath, "v1/") {
@@ -208,15 +242,21 @@ func (c *Connector) Execute(ctx context.Context, task connector.Task) (connector
 		}
 	}
 
-	if encoded := q.Encode(); encoded != "" {
+	method, reqBody := http.MethodGet, io.Reader(nil)
+	if readOnlyPostEndpoints[strings.TrimPrefix(task.Endpoint, "/")] {
+		method, reqBody = http.MethodPost, strings.NewReader(q.Encode())
+	} else if encoded := q.Encode(); encoded != "" {
 		rawURL += "?" + encoded
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	req, err := http.NewRequestWithContext(ctx, method, rawURL, reqBody)
 	if err != nil {
 		return connector.Result{}, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("token", c.token)
+	if method == http.MethodPost {
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	}
 
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -259,6 +299,8 @@ func (c *Connector) Execute(ctx context.Context, task connector.Task) (connector
 		err = c.parseDeviceList(task, env.Data, &res)
 	case "device/inverter/day_energy":
 		err = c.parseDayEnergy(task, body, env.Data, &res)
+	case "device/tlx/tlx_data":
+		err = c.parseMinDay(task, env.Data, &res)
 	case "plant/energy":
 		err = c.parsePlantEnergy(task, env.Data, &res)
 	}
@@ -482,8 +524,7 @@ func (c *Connector) parseDeviceList(task connector.Task, data json.RawMessage, r
 		if model != "" {
 			name = model + " " + sn
 		}
-		lostVal := parseNumberInt(d.Lost)
-		online := (lostVal == 0)
+		online := !parseLost(d.Lost)
 		kind := mapDeviceType(parseNumberInt(d.Type))
 
 		res.Devices = append(res.Devices, connector.DeviceInfo{
@@ -492,6 +533,7 @@ func (c *Connector) parseDeviceList(task connector.Task, data json.RawMessage, r
 			Name:            name,
 			Kind:            kind,
 			Online:          &online,
+			LastSeenLocal:   parseNumberString(d.LastUpdateTime),
 		})
 	}
 
@@ -591,6 +633,49 @@ func (c *Connector) parseDayEnergy(task connector.Task, rawBody, data json.RawMe
 		RawValue:         rawVal,
 	})
 
+	return nil
+}
+
+// parseMinDay turns the newest record of a day into that day's reading. A day
+// with no records produces no reading, so it surfaces as missing data.
+func (c *Connector) parseMinDay(task connector.Task, data json.RawMessage, res *connector.Result) error {
+	var payload struct {
+		Datas []struct {
+			Time     string          `json:"time"`
+			EacToday json.RawMessage `json:"eacToday"`
+		} `json:"datas"`
+	}
+	if len(data) > 0 && string(data) != "null" {
+		if err := json.Unmarshal(data, &payload); err != nil {
+			return fmt.Errorf("unmarshal min data: %w", err)
+		}
+	}
+	date := task.Params["start_date"]
+	if len(payload.Datas) == 0 || !strings.HasPrefix(payload.Datas[0].Time, date) {
+		return nil
+	}
+	raw := strings.Trim(string(payload.Datas[0].EacToday), `"`)
+	value, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return nil
+	}
+	tz := task.Params["timezone"]
+	if tz == "" {
+		tz = c.defaultTimezone
+	}
+	start, end, err := domain.LocalDay(date, tz)
+	if err != nil {
+		return fmt.Errorf("compute local day for %s (%s): %w", date, tz, err)
+	}
+	res.Readings = append(res.Readings, connector.ReadingInfo{
+		PlantExternalID:  task.Params["plant_id"],
+		DeviceExternalID: task.Params["tlx_sn"],
+		Metric:           domain.MetricEnergyKWh,
+		PeriodStart:      start,
+		PeriodEnd:        end,
+		Value:            &value,
+		RawValue:         raw,
+	})
 	return nil
 }
 
@@ -706,6 +791,20 @@ func ParseTimezone(raw, defaultTZ string) string {
 	}
 
 	return defaultTZ
+}
+
+// parseLost reads the device "lost" flag. The documentation describes a number
+// (0 online, 1 disconnected), but production sends a boolean.
+func parseLost(v any) bool {
+	switch val := v.(type) {
+	case bool:
+		return val
+	case string:
+		s := strings.ToLower(strings.TrimSpace(val))
+		return s == "1" || s == "true"
+	default:
+		return parseNumberInt(v) != 0
+	}
 }
 
 func parseNumberString(v any) string {

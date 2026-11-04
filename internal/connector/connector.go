@@ -59,6 +59,9 @@ type DeviceInfo struct {
 	Name            string
 	Kind            string
 	Online          *bool
+	// LastSeenLocal is the provider's last contact, "YYYY-MM-DD HH:MM:SS" in
+	// the plant's time zone. Empty when unknown.
+	LastSeenLocal string
 }
 
 // ReadingInfo is a measurement before it is linked to stored device IDs.
