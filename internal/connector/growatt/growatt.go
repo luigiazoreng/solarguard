@@ -14,9 +14,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
-
-	"golang.org/x/text/encoding/charmap"
 
 	"github.com/luigiazoreng/solarguard/internal/connector"
 	"github.com/luigiazoreng/solarguard/internal/domain"
@@ -273,7 +270,6 @@ func (c *Connector) Execute(ctx context.Context, task connector.Task) (connector
 	}
 
 	res := connector.Result{Raw: body}
-	body = toUTF8(body)
 
 	// Envelope parsing
 	var env apiEnvelope
@@ -795,20 +791,6 @@ func ParseTimezone(raw, defaultTZ string) string {
 	}
 
 	return defaultTZ
-}
-
-// toUTF8 converts a response the provider sent in Latin-1. Without this, JSON
-// decoding replaces accented letters in plant names. Result.Raw keeps the
-// original bytes.
-func toUTF8(body []byte) []byte {
-	if utf8.Valid(body) {
-		return body
-	}
-	converted, err := charmap.ISO8859_1.NewDecoder().Bytes(body)
-	if err != nil {
-		return body
-	}
-	return converted
 }
 
 // parseLost reads the device "lost" flag. The documentation describes a number

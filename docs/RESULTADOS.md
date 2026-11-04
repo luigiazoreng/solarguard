@@ -80,7 +80,19 @@ Cinco plantas com um inversor cada, identificadas por letras para não expor os 
 
 O desempenho é bem menor que na planilha (R² de 0,85). Causas prováveis, ainda não testadas: clima de grade em vez de estação local, potência do inversor limitando os dias de sol e pouca variação diária no período avaliado. Na planta E, nenhum modelo superou a referência, e o sistema não ativou nenhum.
 
-Os inversores MIN só têm os últimos 95 dias de histórico na API, por isso têm tão poucos pontos. Na divisão 80/20, o R² fica negativo nas plantas avaliadas, porque o trecho final tem pouca variação e o modelo erra o nível.
+Os inversores MIN só têm os últimos 95 dias de histórico na API, por isso têm tão poucos pontos.
+
+A divisão 80/20 avalia só o trecho final, e nela o resultado é mais fraco. O melhor entre os modelos climáticos foi sempre o ridge:
+
+| Planta | Pontos | MAE ridge (kWh) | R² ridge | MAE de repetir o dia anterior |
+|---|---|---|---|---|
+| A | 19 | 1,11 | -1,79 | 0,88 |
+| B | 31 | 16,59 | 0,17 | 30,72 |
+| C | 58 | 30,07 | -2,25 | 11,55 |
+| D | 48 | 24,50 | -0,39 | 20,13 |
+| E | 19 | 3,15 | -7,72 | 1,59 |
+
+Nesse trecho, repetir o dia anterior teve MAE menor que o ridge em 4 das 5 plantas. Portanto, nas plantas reais, o modelo ainda não demonstrou ganho estável. Com tão poucos meses, um resultado de um único período é frágil, mas não dá para afirmar que o modelo generaliza bem para elas. Nas regras de alerta, o valor esperado dessas plantas deve ser tratado com cautela. As regras que mais valem nelas são as que não dependem do modelo: travamento, geração zerada e falta de comunicação.
 
 ### Falhas encontradas nos dados reais
 

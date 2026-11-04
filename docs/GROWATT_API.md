@@ -10,6 +10,7 @@ Fontes: coleção pública no Postman e testes de leitura em `test.growatt.com` 
 ## Observado em produção (2026-11-04)
 
 - `lost` chega como **booleano**, não como número.
+- Nomes de plantas podem chegar com o caractere de substituição `U+FFFD` no lugar de letras acentuadas. Os bytes já vêm assim da API, então só dá para corrigir no cadastro da Growatt.
 - `device/list` pode listar o mesmo inversor duas vezes, com tipos diferentes (1 e 4), com `count` igual a 1.
 - `device/inverter/day_energy` confere com `plant/energy` no inversor de tipo 1 e retorna **0 falso em inversores MIN (tipo 7)**. Para MIN, usar `POST /v1/device/tlx/tlx_data`: os registros vêm do mais novo para o mais antigo, e o `eacToday` do primeiro registro é o total do dia.
 - O limite também aceita chamadas em sequência para outros parâmetros: 35 chamadas de `day_energy` em 8 segundos, sem `10012`. Nos endpoints de MIN, o `10012` apareceu mesmo sem repetir os parâmetros, então pode haver limite por dispositivo.
