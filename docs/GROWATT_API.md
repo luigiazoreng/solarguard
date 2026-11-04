@@ -30,6 +30,7 @@ Fontes: coleção pública no Postman e testes de leitura em `test.growatt.com` 
 ## Cuidados
 
 - `plant_id` chega como inteiro. `peak_power` pode ser inteiro ou decimal. Vários números chegam como texto.
+- A unidade de `peak_power` não está documentada (o servidor de testes retornou 20000); ela é armazenada como está em `peak_power_kw` até confirmação.
 - `device/list` retorna `lost` (0 online, 1 desconectado) e `status` por tipo. No tipo 1, `3` é falha.
 - A unidade de `day_energy.data` não está documentada. Presume-se kWh, a confirmar com dados reais.
 - O servidor de testes não tem inversores cadastrados: `day_energy` só é testável com token de produção.
