@@ -1,0 +1,264 @@
+{{define "content"}}
+<div style="margin-bottom:20px;">
+  <h1 style="margin:0 0 4px 0;font-size:1.6rem;">Gestão e Configurações</h1>
+  <p style="color:var(--text-muted);margin:0;">Fontes de dados, fila de sincronização, regras de alerta e execução da pipeline</p>
+</div>
+
+{{if .SuccessMessage}}
+<div style="background:var(--success-bg);color:var(--success);border:1px solid var(--success);padding:10px 16px;border-radius:6px;margin-bottom:20px;font-weight:500;">
+  ✓ {{.SuccessMessage}}
+</div>
+{{end}}
+{{if .ErrorMessage}}
+<div style="background:var(--danger-bg);color:var(--danger);border:1px solid var(--danger);padding:10px 16px;border-radius:6px;margin-bottom:20px;font-weight:500;">
+  ⚠️ {{.ErrorMessage}}
+</div>
+{{end}}
+
+<!-- 1. Execução Manual da Pipeline -->
+<div class="card" style="margin-bottom:32px;">
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px;margin-bottom:16px;">
+    <div>
+      <h3 style="margin:0 0 4px 0;font-size:1.15rem;">Pipeline Noturna de Processamento</h3>
+      <p style="color:var(--text-muted);margin:0;font-size:0.875rem;">Sincroniza clima, classifica qualidade, calcula previsões e avalia alertas.</p>
+    </div>
+    <form method="POST" action="/manage/pipeline/run" style="display:flex;gap:8px;align-items:center;">
+      <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+      <select name="plant_id" class="form-control" style="width:auto;">
+        <option value="">Todas as usinas</option>
+        {{range .Plants}}
+        <option value="{{.ID}}">{{.Name}}</option>
+        {{end}}
+      </select>
+      <button type="submit" class="btn btn-sm">Executar Pipeline</button>
+    </form>
+  </div>
+
+  <h4 style="margin:0 0 8px 0;font-size:0.95rem;color:var(--text-muted);">Últimas Execuções da Pipeline</h4>
+  {{if eq (len .PipelineRuns) 0}}
+    <div style="color:var(--text-muted);font-size:0.875rem;padding:8px 0;">Nenhuma execução registrada ainda.</div>
+  {{else}}
+    <div class="table-container" style="margin-bottom:0;">
+      <table>
+        <thead>
+          <tr>
+            <th>Usina</th>
+            <th>Data Local</th>
+            <th>Status Geral</th>
+            <th>Etapas</th>
+            <th>Iniciado em</th>
+            <th>Concluído em</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{range .PipelineRuns}}
+          <tr>
+            <td style="font-weight:600;">{{.PlantName}}</td>
+            <td>{{formatDate .Run.LocalDate}}</td>
+            <td>
+              {{if eq .Run.Status "success"}}
+                <span class="badge badge-success">Sucesso</span>
+              {{else if eq .Run.Status "partial"}}
+                <span class="badge badge-warning">Parcial</span>
+              {{else}}
+                <span class="badge badge-critical">Falha</span>
+              {{end}}
+            </td>
+            <td>
+              <div style="display:inline-flex;gap:4px;flex-wrap:wrap;">
+                {{range .Steps}}
+                  {{if eq .Status "ok"}}
+                    <span class="badge badge-success" title="{{.Name}}: {{.DurationMS}}ms">{{.Name}}</span>
+                  {{else if eq .Status "skipped"}}
+                    <span class="badge badge-neutral" title="{{.Name}}: ignorado">{{.Name}}</span>
+                  {{else}}
+                    <span class="badge badge-critical" title="{{.Name}}: {{.Error}}">{{.Name}}</span>
+                  {{end}}
+                {{end}}
+              </div>
+            </td>
+            <td>{{formatTime (makeTimePtr .Run.StartedAt) "America/Sao_Paulo"}}</td>
+            <td>{{formatTime (makeTimePtr .Run.FinishedAt) "America/Sao_Paulo"}}</td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+  {{end}}
+</div>
+
+<!-- 2. Fontes e Fila de Tarefas -->
+<div style="margin-bottom:32px;">
+  <h2 style="font-size:1.25rem;margin-bottom:12px;">Fontes de Dados e Fila</h2>
+  <div class="table-container">
+    <table>
+      <thead>
+        <tr>
+          <th>Fonte</th>
+          <th>Tipo</th>
+          <th>Variável de Credencial</th>
+          <th>Status da Credencial</th>
+          <th>Pendentes</th>
+          <th>Concluídas</th>
+          <th>Falhas</th>
+          <th>Próxima Execução</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .SourceStats}}
+        <tr>
+          <td style="font-weight:600;">{{.Source.Name}}</td>
+          <td><code>{{.Source.Kind}}</code></td>
+          <td><code>{{.Source.CredentialEnv}}</code></td>
+          <td>
+            {{if .IsEnvConfigured}}
+              <span class="badge badge-success">Configurada</span>
+            {{else}}
+              <span class="badge badge-critical">Não configurada</span>
+            {{end}}
+          </td>
+          <td>{{.Stats.Pending}}</td>
+          <td>{{.Stats.Done}}</td>
+          <td>
+            {{if gt .Stats.Failed 0}}
+              <span class="badge badge-critical">{{.Stats.Failed}}</span>
+            {{else}}
+              0
+            {{end}}
+          </td>
+          <td>{{formatTime .Stats.NextDue "America/Sao_Paulo"}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- 3. Editar Coordenadas e Fuso Horário de Usinas -->
+<div style="margin-bottom:32px;">
+  <h2 style="font-size:1.25rem;margin-bottom:12px;">Localização e Fuso Horário das Usinas</h2>
+  <div class="table-container">
+    <table>
+      <thead>
+        <tr>
+          <th>Usina</th>
+          <th>Fuso Horário</th>
+          <th>Latitude</th>
+          <th>Longitude</th>
+          <th>Ação</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Plants}}
+        <tr>
+          <form method="POST" action="/manage/plants/{{.ID}}">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+            <td style="font-weight:600;">{{.Name}}</td>
+            <td>
+              <input type="text" name="timezone" class="form-control" value="{{.Timezone}}" style="width:180px;" required>
+            </td>
+            <td>
+              <input type="number" step="0.0001" name="latitude" class="form-control" value="{{if .Latitude}}{{formatFloat (derefFloat .Latitude) 4}}{{end}}" style="width:120px;" placeholder="-23.5">
+            </td>
+            <td>
+              <input type="number" step="0.0001" name="longitude" class="form-control" value="{{if .Longitude}}{{formatFloat (derefFloat .Longitude) 4}}{{end}}" style="width:120px;" placeholder="-46.6">
+            </td>
+            <td>
+              <button type="submit" class="btn btn-secondary btn-sm">Salvar</button>
+            </td>
+          </form>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- 4. Editar Especificações dos Dispositivos -->
+<div style="margin-bottom:32px;">
+  <h2 style="font-size:1.25rem;margin-bottom:12px;">Especificações Físicas dos Dispositivos</h2>
+  <div class="table-container">
+    <table>
+      <thead>
+        <tr>
+          <th>Usina</th>
+          <th>Dispositivo</th>
+          <th>Capacidade (kW)</th>
+          <th>Área Painel (m²)</th>
+          <th>Eficiência (0-1)</th>
+          <th>Ação</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .AllDevices}}
+        <tr>
+          <form method="POST" action="/manage/devices/{{.Device.ID}}">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+            <td>{{.PlantName}}</td>
+            <td style="font-weight:600;">{{.Device.Name}}</td>
+            <td>
+              <input type="number" step="0.1" name="capacity_kw" class="form-control" value="{{if .Device.CapacityKW}}{{formatFloat (derefFloat .Device.CapacityKW) 1}}{{end}}" style="width:110px;" placeholder="ex: 15.0">
+            </td>
+            <td>
+              <input type="number" step="0.1" name="panel_area_m2" class="form-control" value="{{if .Device.PanelAreaM2}}{{formatFloat (derefFloat .Device.PanelAreaM2) 1}}{{end}}" style="width:110px;" placeholder="ex: 42.0">
+            </td>
+            <td>
+              <input type="number" step="0.01" name="efficiency" class="form-control" value="{{if .Device.Efficiency}}{{formatFloat (derefFloat .Device.Efficiency) 2}}{{end}}" style="width:100px;" placeholder="ex: 0.18">
+            </td>
+            <td>
+              <button type="submit" class="btn btn-secondary btn-sm">Salvar</button>
+            </td>
+          </form>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- 5. Configuração de Regras de Alerta por Usina -->
+<div style="margin-bottom:32px;">
+  <h2 style="font-size:1.25rem;margin-bottom:8px;">Parâmetros das Regras de Alerta</h2>
+  <p style="color:var(--text-muted);font-size:0.875rem;margin-bottom:12px;">Ative ou desative regras e defina limites por usina em formato JSON.</p>
+
+  <div class="table-container">
+    <table>
+      <thead>
+        <tr>
+          <th>Regra</th>
+          <th>Usina</th>
+          <th>Habilitada</th>
+          <th>Parâmetros (JSON)</th>
+          <th>Ação</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .RuleRows}}
+        <tr>
+          <form method="POST" action="/manage/rules">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+            <input type="hidden" name="rule" value="{{.Rule}}">
+            <input type="hidden" name="plant_id" value="{{.PlantID}}">
+
+            <td style="font-weight:600;"><code>{{.Rule}}</code></td>
+            <td>{{.PlantName}}</td>
+            <td>
+              <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;">
+                <input type="checkbox" name="enabled" value="true" {{if .Enabled}}checked{{end}}>
+                {{if .Enabled}}Ativa{{else}}Inativa{{end}}
+              </label>
+            </td>
+            <td>
+              <input type="text" name="params_json" class="form-control" value="{{.ParamsJSON}}" style="width:300px;font-family:monospace;font-size:0.8rem;" required>
+            </td>
+            <td>
+              <button type="submit" class="btn btn-secondary btn-sm">Salvar Regra</button>
+            </td>
+          </form>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
+{{end}}

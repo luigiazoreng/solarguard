@@ -1,0 +1,125 @@
+{{define "content"}}
+<div style="margin-bottom:20px;">
+  <a href="/alerts" style="color:var(--text-muted);">&larr; Voltar para Alertas</a>
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px;margin-top:8px;">
+    <div>
+      <h1 style="margin:0 0 4px 0;font-size:1.6rem;">{{.Alert.Title}}</h1>
+      <div style="color:var(--text-muted);font-size:0.875rem;">
+        Usina: <strong>{{.Plant.Name}}</strong>
+        {{if .Device}} • Dispositivo: <strong>{{.Device.Name}} ({{.Device.ExternalID}})</strong>{{end}}
+        • Regra: <code>{{.Alert.Rule}}</code>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;">
+      {{if eq .Alert.Severity "critical"}}
+        <span class="badge badge-critical" style="font-size:0.9rem;padding:4px 10px;">Crítico</span>
+      {{else if eq .Alert.Severity "warning"}}
+        <span class="badge badge-warning" style="font-size:0.9rem;padding:4px 10px;">Aviso</span>
+      {{else}}
+        <span class="badge badge-info" style="font-size:0.9rem;padding:4px 10px;">Info</span>
+      {{end}}
+
+      <div id="alert-status-badge">
+        {{if eq .Alert.Status "open"}}
+          <span class="badge badge-critical" style="font-size:0.9rem;padding:4px 10px;">Aberto</span>
+        {{else if eq .Alert.Status "ack"}}
+          <span class="badge badge-warning" style="font-size:0.9rem;padding:4px 10px;">Reconhecido</span>
+        {{else}}
+          <span class="badge badge-success" style="font-size:0.9rem;padding:4px 10px;">Resolvido</span>
+        {{end}}
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="note-box" style="border-left-color:var(--warning);">
+  <strong>Aviso:</strong> Alerta é um indício para análise, não um diagnóstico.
+</div>
+
+<div class="grid" style="margin-bottom:24px;">
+  <div class="card">
+    <div class="card-title">Período do Incidente</div>
+    <div class="card-value" style="font-size:1.15rem;">{{formatDate .Alert.FirstDate}} a {{formatDate .Alert.LastDate}}</div>
+    <div class="card-sub">Detectado em: {{formatTime (makeTimePtr .Alert.CreatedAt) .Plant.Timezone}}</div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Gerenciar Incidente</div>
+    <div id="alert-actions" style="margin-top:8px;">
+      <form id="action-form">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+        <div style="margin-bottom:10px;">
+          <label for="note-input" style="display:block;font-size:0.8rem;color:var(--text-muted);margin-bottom:4px;">Anotação de Análise</label>
+          <input type="text" id="note-input" name="note" value="{{.Alert.Note}}" class="form-control" placeholder="Adicione uma nota sobre a ação tomada...">
+        </div>
+        <div style="display:flex;gap:8px;">
+          {{if eq .Alert.Status "open"}}
+          <button type="button" class="btn btn-secondary btn-sm"
+                  hx-post="/alerts/{{.Alert.ID}}/ack"
+                  hx-include="#action-form"
+                  hx-target="body">
+            Reconhecer
+          </button>
+          {{end}}
+          {{if ne .Alert.Status "resolved"}}
+          <button type="button" class="btn btn-sm"
+                  hx-post="/alerts/{{.Alert.ID}}/resolve"
+                  hx-include="#action-form"
+                  hx-target="body">
+            Resolver
+          </button>
+          {{else}}
+          <span style="color:var(--success);font-weight:600;font-size:0.9rem;">Incidente finalizado como resolvido.</span>
+          {{end}}
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- Tabela de Evidências -->
+<h3 style="font-size:1.15rem;margin-bottom:8px;">Evidência Determinística</h3>
+{{if .EvidenceValues}}
+<div class="table-container">
+  <table>
+    <thead>
+      <tr>
+        <th>Data</th>
+        <th>Valor Medido (kWh)</th>
+        <th>Esperado (kWh)</th>
+        <th>Mediana dos Pares</th>
+        <th>Motivo / Diagnóstico</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .EvidenceValues}}
+      <tr>
+        <td>{{formatDate .Date}}</td>
+        <td>{{if .Value}}{{formatFloat (derefFloat .Value) 2}}{{else}}-{{end}}</td>
+        <td>{{if .Expected}}{{formatFloat (derefFloat .Expected) 2}}{{else}}-{{end}}</td>
+        <td>{{if .PeerMedian}}{{formatFloat (derefFloat .PeerMedian) 2}}{{else}}-{{end}}</td>
+        <td>{{if .Reason}}<code>{{.Reason}}</code>{{else}}-{{end}}</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+{{else}}
+<div class="card" style="margin-bottom:24px;">
+  <pre style="margin:0;font-size:0.85rem;white-space:pre-wrap;">{{.Alert.EvidenceJSON}}</pre>
+</div>
+{{end}}
+
+<!-- Parâmetros da Regra -->
+{{if .EvidenceParams}}
+<h3 style="font-size:1.15rem;margin-bottom:8px;margin-top:24px;">Parâmetros Utilizados na Detecção</h3>
+<div class="card" style="margin-bottom:24px;">
+  <dl style="margin:0;display:grid;grid-template-columns:auto 1fr;gap:8px 16px;">
+    {{range $k, $v := .EvidenceParams}}
+    <dt style="font-weight:600;color:var(--text-muted);">{{$k}}:</dt>
+    <dd style="margin:0;"><code>{{$v}}</code></dd>
+    {{end}}
+  </dl>
+</div>
+{{end}}
+{{end}}
