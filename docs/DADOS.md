@@ -6,8 +6,9 @@ A planilha `Placa Solar - Consumo Diário.xlsx` não vai para o repositório. Co
 
 O rótulo `KW` está errado.
 
-- **Célula numérica:** Wh. Dividir por 1000.
 - **Célula de texto, como `"42.32"`:** já em kWh. Não dividir. A razão mediana contra os outros dispositivos do dia é 1,004.
+- **Célula numérica com valor absoluto abaixo de 1000 (ex: 44 e 2):** já em kWh. Não dividir. Os pares nesses dias geram 41,32 e 3,01 kWh.
+- **Célula numérica com valor absoluto igual ou superior a 1000:** Wh. Dividir por 1000 (a menor célula verdadeira em Wh é 2001).
 
 ## Falhas conhecidas (datas conforme o carimbo da planilha)
 
