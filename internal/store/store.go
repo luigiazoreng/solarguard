@@ -136,8 +136,8 @@ func (s *Store) UpsertPlant(ctx context.Context, p domain.Plant) (domain.Plant, 
 		(source_id, external_id, name, timezone, latitude, longitude, peak_power_kw, weather_location_id, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (source_id, external_id) DO UPDATE SET
-			name = excluded.name,
-			timezone = excluded.timezone,
+			name = COALESCE(NULLIF(excluded.name, ''), name),
+			timezone = COALESCE(NULLIF(excluded.timezone, ''), timezone),
 			latitude = COALESCE(excluded.latitude, latitude),
 			longitude = COALESCE(excluded.longitude, longitude),
 			peak_power_kw = COALESCE(excluded.peak_power_kw, peak_power_kw),

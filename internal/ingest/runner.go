@@ -76,6 +76,10 @@ func NewRunner(st *store.Store, sourceID int64, conn connector.Connector, opts .
 
 // Step chooses and executes one eligible task, returning whether a task was processed.
 func (r *Runner) Step(ctx context.Context) (bool, error) {
+	if ctx.Err() != nil {
+		return false, ctx.Err()
+	}
+
 	now := r.now()
 	rec, task, err := r.store.PickNextTask(ctx, r.sourceID, now)
 	if err != nil {
@@ -86,21 +90,12 @@ func (r *Runner) Step(ctx context.Context) (bool, error) {
 	}
 
 	res, execErr := r.conn.Execute(ctx, *task)
-	if execErr != nil {
-		if errors.Is(execErr, connector.ErrRateLimited) {
-			var rle *connector.RateLimitError
-			retryAfter := 5 * time.Minute
-			if errors.As(execErr, &rle) && rle.RetryAfter > 0 {
-				retryAfter = rle.RetryAfter
-			}
-			nextAllowed := r.now().Add(retryAfter)
-			if err := r.store.MarkTaskRateLimited(ctx, r.sourceID, rec.ID, rec.TaskKey, nextAllowed, r.now()); err != nil {
-				return true, fmt.Errorf("mark task rate limited: %w", err)
-			}
-			return true, nil
-		}
+	if ctx.Err() != nil {
+		// A cancelled context during Execute must not count an attempt or apply backoff
+		return false, ctx.Err()
+	}
 
-		// Other errors: attempts+1, last_error set (no token), not_before = now + min(2^attempts minutes, 6h). After 8 attempts, status failed.
+	handleFailure := func(causeErr error, returnErr bool) (bool, error) {
 		newAttempts := rec.Attempts + 1
 		failed := (newAttempts >= 8)
 		backoffMin := 1 << newAttempts
@@ -109,12 +104,32 @@ func (r *Runner) Step(ctx context.Context) (bool, error) {
 			backoff = 6 * time.Hour
 		}
 		nextNotBefore := r.now().Add(backoff)
-		sanitizedErr := sanitizeError(execErr.Error())
+		sanitizedErr := sanitizeError(causeErr.Error())
 
-		if err := r.store.MarkTaskFailedOrRetry(ctx, rec.ID, newAttempts, sanitizedErr, nextNotBefore, failed, r.now()); err != nil {
+		if err := r.store.MarkTaskFailedOrRetry(context.Background(), rec.ID, newAttempts, sanitizedErr, nextNotBefore, failed, r.now()); err != nil {
 			return true, fmt.Errorf("mark task failed or retry: %w", err)
 		}
+		if returnErr {
+			return true, causeErr
+		}
 		return true, nil
+	}
+
+	if execErr != nil {
+		if errors.Is(execErr, connector.ErrRateLimited) {
+			var rle *connector.RateLimitError
+			retryAfter := 5 * time.Minute
+			if errors.As(execErr, &rle) && rle.RetryAfter > 0 {
+				retryAfter = rle.RetryAfter
+			}
+			nextAllowed := r.now().Add(retryAfter)
+			if err := r.store.MarkTaskRateLimited(ctx, r.sourceID, rec.ID, rec.TaskKey, task.Endpoint, nextAllowed, r.now()); err != nil {
+				return true, fmt.Errorf("mark task rate limited: %w", err)
+			}
+			return true, nil
+		}
+
+		return handleFailure(execErr, false)
 	}
 
 	// Success: in this order, insert the raw payload, upsert plants, upsert devices,
@@ -122,7 +137,7 @@ func (r *Runner) Step(ctx context.Context) (bool, error) {
 	paramsJSON, _ := json.Marshal(task.Params)
 	payloadID, err := r.store.InsertRawPayload(ctx, r.sourceID, task.Endpoint, string(paramsJSON), res.Raw)
 	if err != nil {
-		return true, fmt.Errorf("insert raw payload: %w", err)
+		return handleFailure(fmt.Errorf("insert raw payload: %w", err), true)
 	}
 
 	plantIDMap := make(map[string]int64)
@@ -137,7 +152,7 @@ func (r *Runner) Step(ctx context.Context) (bool, error) {
 			PeakPowerKW: p.PeakPowerKW,
 		})
 		if err != nil {
-			return true, fmt.Errorf("upsert plant %s: %w", p.ExternalID, err)
+			return handleFailure(fmt.Errorf("upsert plant %s: %w", p.ExternalID, err), true)
 		}
 		plantIDMap[p.ExternalID] = pStored.ID
 	}
@@ -160,7 +175,7 @@ func (r *Runner) Step(ctx context.Context) (bool, error) {
 			Online:     d.Online,
 		})
 		if err != nil {
-			return true, fmt.Errorf("upsert device %s: %w", d.ExternalID, err)
+			return handleFailure(fmt.Errorf("upsert device %s: %w", d.ExternalID, err), true)
 		}
 		deviceIDMap[d.ExternalID] = dStored.ID
 	}
@@ -197,18 +212,18 @@ func (r *Runner) Step(ctx context.Context) (bool, error) {
 
 	if len(readingsToInsert) > 0 {
 		if _, err := r.store.InsertReadings(ctx, readingsToInsert); err != nil {
-			return true, fmt.Errorf("insert readings: %w", err)
+			return handleFailure(fmt.Errorf("insert readings: %w", err), true)
 		}
 	}
 
 	for _, followup := range res.Followups {
-		if err := r.store.EnqueueTask(ctx, r.sourceID, followup, r.now(), false); err != nil {
-			return true, fmt.Errorf("enqueue followup: %w", err)
+		if err := r.store.EnqueueTask(ctx, r.sourceID, followup, r.now(), followup.Refreshable); err != nil {
+			return handleFailure(fmt.Errorf("enqueue followup: %w", err), true)
 		}
 	}
 
 	if err := r.store.MarkTaskDone(ctx, rec.ID, r.now()); err != nil {
-		return true, fmt.Errorf("mark task done: %w", err)
+		return handleFailure(fmt.Errorf("mark task done: %w", err), true)
 	}
 
 	return true, nil
@@ -228,6 +243,11 @@ func (r *Runner) Run(ctx context.Context) error {
 			if r.logger != nil {
 				r.logger.Printf("runner error source=%d: %v", r.sourceID, err)
 			}
+			// When Step returns an error, sleep before next loop to avoid spinning
+			if sleepErr := r.sleep(ctx, time.Second); sleepErr != nil {
+				return sleepErr
+			}
+			continue
 		}
 
 		if !processed {

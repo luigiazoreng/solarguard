@@ -38,6 +38,8 @@ type Task struct {
 	DailyBudget    int    `json:"daily_budget,omitempty"`
 	// Priority orders due tasks. Higher runs first.
 	Priority int `json:"priority"`
+	// Refreshable marks tasks that should refresh existing records instead of skipping them.
+	Refreshable bool `json:"refreshable,omitempty"`
 }
 
 // PlantInfo describes a discovered plant.

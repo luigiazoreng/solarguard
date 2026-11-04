@@ -106,18 +106,20 @@ func (c *Connector) Discovery() []connector.Task {
 			DailyBudgetKey: "plant/list",
 			DailyBudget:    10,
 			Priority:       20,
+			Refreshable:    true,
 		},
 	}
 }
 
 // DailyTasks produces daily collection tasks for a plant and date.
-// For plants with real devices, one device/inverter/day_energy task per device is created.
-// For plants without devices, one plant/energy task is created for a synthetic plant device.
+// Creates day_energy only for inverter, max, sph, spa, and min.
+// If a plant has devices but none of those kinds, it falls back to plant/energy for a synthetic plant device.
 func (c *Connector) DailyTasks(plant domain.Plant, devices []domain.Device, date string) []connector.Task {
-	var realDevices []domain.Device
+	var eligibleDevices []domain.Device
 	for _, d := range devices {
-		if d.Kind != "plant" && !strings.HasPrefix(d.ExternalID, "plant:") {
-			realDevices = append(realDevices, d)
+		switch d.Kind {
+		case "inverter", "max", "sph", "spa", "min":
+			eligibleDevices = append(eligibleDevices, d)
 		}
 	}
 
@@ -126,7 +128,7 @@ func (c *Connector) DailyTasks(plant domain.Plant, devices []domain.Device, date
 		tz = c.defaultTimezone
 	}
 
-	if len(realDevices) == 0 {
+	if len(eligibleDevices) == 0 {
 		params := map[string]string{
 			"plant_id":   plant.ExternalID,
 			"start_date": date,
@@ -147,8 +149,8 @@ func (c *Connector) DailyTasks(plant domain.Plant, devices []domain.Device, date
 		}
 	}
 
-	tasks := make([]connector.Task, 0, len(realDevices))
-	for _, dev := range realDevices {
+	tasks := make([]connector.Task, 0, len(eligibleDevices))
+	for _, dev := range eligibleDevices {
 		params := map[string]string{
 			"device_sn": dev.ExternalID,
 			"date":      date,
@@ -324,6 +326,7 @@ func (c *Connector) parsePlantList(task connector.Task, data json.RawMessage, re
 			LimitKey:    MakeLimitKey("plant/details", pDetailsParams),
 			MinInterval: 5 * time.Minute,
 			Priority:    15,
+			Refreshable: true,
 		})
 
 		// Followup: device/list page 1
@@ -338,6 +341,7 @@ func (c *Connector) parsePlantList(task connector.Task, data json.RawMessage, re
 			LimitKey:    MakeLimitKey("device/list", devListParams),
 			MinInterval: 5 * time.Minute,
 			Priority:    15,
+			Refreshable: true,
 		})
 	}
 
@@ -355,6 +359,7 @@ func (c *Connector) parsePlantList(task connector.Task, data json.RawMessage, re
 			DailyBudgetKey: "plant/list",
 			DailyBudget:    10,
 			Priority:       20,
+			Refreshable:    true,
 		})
 	}
 
@@ -406,14 +411,43 @@ func (c *Connector) parsePlantDetails(task connector.Task, data json.RawMessage,
 	return nil
 }
 
+func mapDeviceType(typeVal int) string {
+	switch typeVal {
+	case 1:
+		return "inverter"
+	case 2:
+		return "storage"
+	case 3:
+		return "other"
+	case 4:
+		return "max"
+	case 5:
+		return "sph"
+	case 6:
+		return "spa"
+	case 7:
+		return "min"
+	case 8:
+		return "pcs"
+	case 9:
+		return "hps"
+	case 10:
+		return "pbd"
+	default:
+		return "other"
+	}
+}
+
 func (c *Connector) parseDeviceList(task connector.Task, data json.RawMessage, res *connector.Result) error {
 	var payload struct {
 		Devices []struct {
-			DeviceSN   any    `json:"device_sn"`
-			SN         any    `json:"sn"`
-			DeviceName string `json:"device_name"`
-			DeviceType any    `json:"device_type"`
-			Lost       any    `json:"lost"`
+			DeviceSN       any `json:"device_sn"`
+			SN             any `json:"sn"`
+			Model          any `json:"model"`
+			Type           any `json:"type"`
+			Lost           any `json:"lost"`
+			Status         any `json:"status"`
+			LastUpdateTime any `json:"last_update_time"`
 		} `json:"devices"`
 		Count any `json:"count"`
 	}
@@ -443,18 +477,20 @@ func (c *Connector) parseDeviceList(task connector.Task, data json.RawMessage, r
 		if sn == "" {
 			continue
 		}
-		name := d.DeviceName
-		if name == "" {
-			name = sn
+		model := parseNumberString(d.Model)
+		name := sn
+		if model != "" {
+			name = model + " " + sn
 		}
 		lostVal := parseNumberInt(d.Lost)
 		online := (lostVal == 0)
+		kind := mapDeviceType(parseNumberInt(d.Type))
 
 		res.Devices = append(res.Devices, connector.DeviceInfo{
 			PlantExternalID: plantExtID,
 			ExternalID:      sn,
 			Name:            name,
-			Kind:            "inverter",
+			Kind:            kind,
 			Online:          &online,
 		})
 	}
@@ -471,6 +507,7 @@ func (c *Connector) parseDeviceList(task connector.Task, data json.RawMessage, r
 			LimitKey:    MakeLimitKey("device/list", nextParams),
 			MinInterval: 5 * time.Minute,
 			Priority:    15,
+			Refreshable: true,
 		})
 	}
 
@@ -518,12 +555,18 @@ func (c *Connector) parseDayEnergy(task connector.Task, rawBody, data json.RawMe
 		rawEnergyData = nested.Data
 	}
 
-	rawVal := strings.Trim(string(rawEnergyData), "\"")
-	valFloat, err := strconv.ParseFloat(rawVal, 64)
-	var valPtr *float64
-	if err == nil {
-		valPtr = &valFloat
+	if len(rawEnergyData) == 0 || bytes.Equal(rawEnergyData, []byte("null")) {
+		return nil
 	}
+	rawVal := strings.Trim(string(rawEnergyData), "\"")
+	if rawVal == "" || rawVal == "null" {
+		return nil
+	}
+	valFloat, err := strconv.ParseFloat(rawVal, 64)
+	if err != nil {
+		return nil
+	}
+	valPtr := &valFloat
 
 	date := task.Params["date"]
 	tz := task.Params["timezone"]
@@ -583,11 +626,14 @@ func (c *Connector) parsePlantEnergy(task connector.Task, data json.RawMessage, 
 
 	for _, e := range payload.Energys {
 		rawVal := parseNumberString(e.Energy)
-		valFloat, err := strconv.ParseFloat(rawVal, 64)
-		var valPtr *float64
-		if err == nil {
-			valPtr = &valFloat
+		if rawVal == "" || rawVal == "null" {
+			continue
 		}
+		valFloat, err := strconv.ParseFloat(rawVal, 64)
+		if err != nil {
+			continue
+		}
+		valPtr := &valFloat
 
 		start, end, err := domain.LocalDay(e.Date, tz)
 		if err != nil {

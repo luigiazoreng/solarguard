@@ -214,6 +214,7 @@ func (s *Store) PickNextTask(ctx context.Context, sourceID int64, now time.Time)
 	query := `SELECT t.id, t.source_id, t.task_key, t.task_json, t.priority, t.status, t.not_before, t.attempts, t.last_error, t.created_at, t.updated_at
 		FROM fetch_tasks t
 		LEFT JOIN rate_limits rl ON rl.source_id = t.source_id AND rl.limit_key = t.task_key
+		LEFT JOIN rate_limits rle ON rle.source_id = t.source_id AND rle.limit_key = ('endpoint:' || json_extract(t.task_json, '$.endpoint'))
 		LEFT JOIN daily_budgets db ON db.source_id = t.source_id
 			AND db.budget_key = json_extract(t.task_json, '$.daily_budget_key')
 			AND db.day = ?
@@ -221,6 +222,7 @@ func (s *Store) PickNextTask(ctx context.Context, sourceID int64, now time.Time)
 		  AND t.status = 'pending'
 		  AND t.not_before <= ?
 		  AND (rl.next_allowed_at IS NULL OR rl.next_allowed_at <= ?)
+		  AND (rle.next_allowed_at IS NULL OR rle.next_allowed_at <= ?)
 		  AND (
 			  json_extract(t.task_json, '$.daily_budget_key') IS NULL
 			  OR json_extract(t.task_json, '$.daily_budget_key') = ''
@@ -234,7 +236,7 @@ func (s *Store) PickNextTask(ctx context.Context, sourceID int64, now time.Time)
 
 	var rec TaskRecord
 	var nbStr, caStr, uaStr string
-	err = tx.QueryRowContext(ctx, query, utcDay, sourceID, nowStr, nowStr).
+	err = tx.QueryRowContext(ctx, query, utcDay, sourceID, nowStr, nowStr, nowStr).
 		Scan(&rec.ID, &rec.SourceID, &rec.TaskKey, &rec.TaskJSON, &rec.Priority, &rec.Status,
 			&nbStr, &rec.Attempts, &rec.LastError, &caStr, &uaStr)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -294,12 +296,13 @@ func (s *Store) PickNextTask(ctx context.Context, sourceID int64, now time.Time)
 // Returns nil if no tasks are pending.
 func (s *Store) NextDueTime(ctx context.Context, sourceID int64, now time.Time) (*time.Time, error) {
 	utcDay := now.UTC().Format("2006-01-02")
-	rows, err := s.db.QueryContext(ctx, `SELECT t.not_before, rl.next_allowed_at,
+	rows, err := s.db.QueryContext(ctx, `SELECT t.not_before, rl.next_allowed_at, rle.next_allowed_at,
 		json_extract(t.task_json, '$.daily_budget_key'),
 		json_extract(t.task_json, '$.daily_budget'),
 		db.used
 		FROM fetch_tasks t
 		LEFT JOIN rate_limits rl ON rl.source_id = t.source_id AND rl.limit_key = t.task_key
+		LEFT JOIN rate_limits rle ON rle.source_id = t.source_id AND rle.limit_key = ('endpoint:' || json_extract(t.task_json, '$.endpoint'))
 		LEFT JOIN daily_budgets db ON db.source_id = t.source_id
 			AND db.budget_key = json_extract(t.task_json, '$.daily_budget_key')
 			AND db.day = ?
@@ -314,10 +317,11 @@ func (s *Store) NextDueTime(ctx context.Context, sourceID int64, now time.Time) 
 	for rows.Next() {
 		var nbStr string
 		var rlNext *string
+		var rleNext *string
 		var budgetKey *string
 		var budgetVal *int
 		var budgetUsed *int
-		if err := rows.Scan(&nbStr, &rlNext, &budgetKey, &budgetVal, &budgetUsed); err != nil {
+		if err := rows.Scan(&nbStr, &rlNext, &rleNext, &budgetKey, &budgetVal, &budgetUsed); err != nil {
 			return nil, fmt.Errorf("scan pending task: %w", err)
 		}
 		nb, err := parseTime(nbStr)
@@ -327,6 +331,15 @@ func (s *Store) NextDueTime(ctx context.Context, sourceID int64, now time.Time) 
 		ready := nb
 		if rlNext != nil {
 			rt, err := parseTime(*rlNext)
+			if err != nil {
+				return nil, err
+			}
+			if rt.After(ready) {
+				ready = rt
+			}
+		}
+		if rleNext != nil {
+			rt, err := parseTime(*rleNext)
 			if err != nil {
 				return nil, err
 			}
@@ -362,8 +375,9 @@ func (s *Store) MarkTaskDone(ctx context.Context, taskID int64, now time.Time) e
 }
 
 // MarkTaskRateLimited resets not_before and rate_limits.next_allowed_at to nextAllowed.
+// It also sets the endpoint-wide cooldown: rate_limits limit_key = "endpoint:" + endpoint.
 // Attempts are unchanged and status stays 'pending'.
-func (s *Store) MarkTaskRateLimited(ctx context.Context, sourceID, taskID int64, limitKey string, nextAllowed, now time.Time) error {
+func (s *Store) MarkTaskRateLimited(ctx context.Context, sourceID, taskID int64, limitKey, endpoint string, nextAllowed, now time.Time) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin rate limited tx: %w", err)
@@ -387,7 +401,35 @@ func (s *Store) MarkTaskRateLimited(ctx context.Context, sourceID, taskID int64,
 		return fmt.Errorf("update rate limit next allowed: %w", err)
 	}
 
+	if endpoint != "" {
+		endpointKey := "endpoint:" + endpoint
+		_, err = tx.ExecContext(ctx, `INSERT INTO rate_limits (source_id, limit_key, next_allowed_at)
+			VALUES (?, ?, ?)
+			ON CONFLICT (source_id, limit_key) DO UPDATE SET next_allowed_at = excluded.next_allowed_at`,
+			sourceID, endpointKey, nextStr)
+		if err != nil {
+			return fmt.Errorf("update endpoint rate limit next allowed: %w", err)
+		}
+	}
+
 	return tx.Commit()
+}
+
+// HasPendingDiscoveryTasks reports whether any plant/list, plant/details, or device/list tasks are pending.
+func (s *Store) HasPendingDiscoveryTasks(ctx context.Context, sourceID int64) (bool, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM fetch_tasks
+		WHERE source_id = ? AND status = 'pending'
+		  AND (
+			  json_extract(task_json, '$.endpoint') IN ('plant/list', 'plant/details', 'device/list')
+			  OR task_key LIKE 'plant/list%'
+			  OR task_key LIKE 'plant/details%'
+			  OR task_key LIKE 'device/list%'
+		  )`, sourceID).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("check pending discovery tasks: %w", err)
+	}
+	return count > 0, nil
 }
 
 // MarkTaskFailedOrRetry increments attempts, records last_error, and either sets status = 'failed'

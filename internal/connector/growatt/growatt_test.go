@@ -552,6 +552,8 @@ func TestParseTimezone(t *testing.T) {
 		{"America/Sao_Paulo", "UTC", "America/Sao_Paulo"},
 		{"-3", "America/Sao_Paulo", "America/Sao_Paulo"},
 		{"+8", "America/Sao_Paulo", "Etc/GMT-8"},
+		{"GMT+8", "America/Sao_Paulo", "Etc/GMT-8"},
+		{"GMT-3", "America/Sao_Paulo", "America/Sao_Paulo"},
 		{"-03:00", "America/Sao_Paulo", "America/Sao_Paulo"},
 		{"", "America/Sao_Paulo", "America/Sao_Paulo"},
 		{"invalid/zone/name", "America/Sao_Paulo", "America/Sao_Paulo"},
@@ -568,5 +570,148 @@ func TestParseTimezone(t *testing.T) {
 		if tc.wantLoad != "" && got != tc.wantLoad {
 			t.Errorf("ParseTimezone(%q, %q) = %q, want %q", tc.input, tc.defaultTZ, got, tc.wantLoad)
 		}
+	}
+}
+
+func TestDeviceListMapsTypeAndModel(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{
+			"error_code": 0,
+			"error_msg": "",
+			"data": {
+				"devices": [
+					{"device_sn": "INV1", "model": "MAX-100", "type": 1, "lost": 0},
+					{"device_sn": "BAT1", "model": "ARK-2.5", "type": 2, "lost": 0},
+					{"device_sn": "MAX1", "model": "", "type": 4, "lost": 0},
+					{"device_sn": "SPH1", "model": "SPH-5000", "type": 5, "lost": 0},
+					{"device_sn": "SPA1", "model": "SPA-3000", "type": 6, "lost": 0},
+					{"device_sn": "MIN1", "model": "MIN-3000", "type": 7, "lost": 0},
+					{"device_sn": "PCS1", "model": "PCS-50", "type": 8, "lost": 0},
+					{"device_sn": "UNK1", "model": "XYZ", "type": 99, "lost": 1}
+				],
+				"count": 8
+			}
+		}`))
+	}))
+	defer server.Close()
+
+	c := New(server.URL, "tok", server.Client())
+	res, err := c.Execute(context.Background(), connector.Task{
+		Endpoint: "device/list",
+		Params:   map[string]string{"plant_id": "100", "page": "1", "perpage": "100"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	expected := map[string]struct {
+		kind string
+		name string
+	}{
+		"INV1": {"inverter", "MAX-100 INV1"},
+		"BAT1": {"storage", "ARK-2.5 BAT1"},
+		"MAX1": {"max", "MAX1"},
+		"SPH1": {"sph", "SPH-5000 SPH1"},
+		"SPA1": {"spa", "SPA-3000 SPA1"},
+		"MIN1": {"min", "MIN-3000 MIN1"},
+		"PCS1": {"pcs", "PCS-50 PCS1"},
+		"UNK1": {"other", "XYZ UNK1"},
+	}
+
+	if len(res.Devices) != len(expected) {
+		t.Fatalf("expected %d devices, got %d", len(expected), len(res.Devices))
+	}
+
+	for _, d := range res.Devices {
+		exp, ok := expected[d.ExternalID]
+		if !ok {
+			t.Errorf("unexpected device SN: %s", d.ExternalID)
+			continue
+		}
+		if d.Kind != exp.kind {
+			t.Errorf("device %s kind = %q, want %q", d.ExternalID, d.Kind, exp.kind)
+		}
+		if d.Name != exp.name {
+			t.Errorf("device %s name = %q, want %q", d.ExternalID, d.Name, exp.name)
+		}
+	}
+}
+
+func TestDailyTasksSkipsStorage(t *testing.T) {
+	c := New("https://example.com", "tok", nil)
+	plant := domain.Plant{ExternalID: "P1", Timezone: "America/Sao_Paulo"}
+
+	// Case 1: Inverter + Storage -> only inverter gets day_energy
+	devices := []domain.Device{
+		{ExternalID: "INV1", Kind: "inverter"},
+		{ExternalID: "BAT1", Kind: "storage"},
+	}
+	tasks := c.DailyTasks(plant, devices, "2026-11-04")
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task for inverter, got %d", len(tasks))
+	}
+	if tasks[0].Endpoint != "device/inverter/day_energy" || tasks[0].Params["device_sn"] != "INV1" {
+		t.Fatalf("unexpected task: %+v", tasks[0])
+	}
+
+	// Case 2: Only storage device -> falls back to plant/energy
+	storageOnly := []domain.Device{
+		{ExternalID: "BAT1", Kind: "storage"},
+	}
+	tasksFallback := c.DailyTasks(plant, storageOnly, "2026-11-04")
+	if len(tasksFallback) != 1 || tasksFallback[0].Endpoint != "plant/energy" {
+		t.Fatalf("expected plant/energy fallback when only storage devices exist, got: %+v", tasksFallback)
+	}
+}
+
+func TestDayEnergyNullProducesNoReading(t *testing.T) {
+	// 1. day_energy with null data
+	s1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"error_code": 0, "error_msg": "", "device_sn": "INV1", "data": null}`))
+	}))
+	defer s1.Close()
+
+	c1 := New(s1.URL, "tok", s1.Client())
+	res1, err := c1.Execute(context.Background(), connector.Task{
+		Endpoint: "device/inverter/day_energy",
+		Params: map[string]string{
+			"device_sn": "INV1",
+			"date":      "2026-11-04",
+			"plant_id":  "P1",
+			"timezone":  "America/Sao_Paulo",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res1.Readings) != 0 {
+		t.Fatalf("expected 0 readings for null day_energy, got %d", len(res1.Readings))
+	}
+
+	// 2. plant/energy with unparsable / empty energy entry
+	s2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"error_code": 0, "error_msg": "", "data": {"energys": [{"date": "2026-11-04", "energy": ""}]}}`))
+	}))
+	defer s2.Close()
+
+	c2 := New(s2.URL, "tok", s2.Client())
+	res2, err := c2.Execute(context.Background(), connector.Task{
+		Endpoint: "plant/energy",
+		Params: map[string]string{
+			"plant_id":   "P1",
+			"start_date": "2026-11-04",
+			"end_date":   "2026-11-04",
+			"time_unit":  "day",
+			"timezone":   "America/Sao_Paulo",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res2.Readings) != 0 {
+		t.Fatalf("expected 0 readings for empty energy entry, got %d", len(res2.Readings))
 	}
 }

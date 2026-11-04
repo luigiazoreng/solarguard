@@ -516,13 +516,13 @@ func TestScheduleCompletedDays(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Only Tokyo should have 1 task enqueued
-	if stats.Pending != 1 {
-		t.Fatalf("expected 1 task enqueued (Tokyo only), got %d", stats.Pending)
+	// Only Tokyo should have 7 tasks enqueued (7 completed days)
+	if stats.Pending != 7 {
+		t.Fatalf("expected 7 tasks enqueued (Tokyo only), got %d", stats.Pending)
 	}
 
 	// Advance UTC time to 04:30:00 UTC
-	// Sao Paulo local time is now 01:30:00 (past 01:00!). Now Sao Paulo gets yesterday (2026-11-03) enqueued!
+	// Sao Paulo local time is now 01:30:00 (past 01:00!). Now Sao Paulo gets 7 completed days enqueued!
 	currentTime = time.Date(2026, 11, 4, 4, 30, 0, 0, time.UTC)
 	if err := ScheduleCompletedDays(ctx, st, src.ID, conn, now); err != nil {
 		t.Fatal(err)
@@ -532,9 +532,9 @@ func TestScheduleCompletedDays(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Now both Tokyo and SP have tasks enqueued (total 2)
-	if stats.Pending != 2 {
-		t.Fatalf("expected 2 tasks enqueued after SP reaches 01:30, got %d", stats.Pending)
+	// Now both Tokyo and SP have tasks enqueued (total 14)
+	if stats.Pending != 14 {
+		t.Fatalf("expected 14 tasks enqueued after SP reaches 01:30, got %d", stats.Pending)
 	}
 }
 
@@ -808,5 +808,582 @@ func TestRunnerStopsOnContextCancel(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("runner did not exit within 2 seconds")
+	}
+}
+
+func TestRateLimit_10012CoolsDownWholeEndpoint(t *testing.T) {
+	currentTime := time.Date(2026, 11, 4, 10, 0, 0, 0, time.UTC)
+	now := func() time.Time { return currentTime }
+
+	st := newTestStore(t, now)
+	ctx := context.Background()
+
+	src, err := st.EnsureSource(ctx, domain.Source{Kind: "growatt", Name: "g1", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Enqueue multiple day_energy tasks for different dates
+	for i := 1; i <= 5; i++ {
+		date := fmt.Sprintf("2026-11-%02d", i)
+		tKey := fmt.Sprintf("device/inverter/day_energy?date=%s&device_sn=INV1", date)
+		tk := connector.Task{
+			Endpoint: "device/inverter/day_energy",
+			Params:   map[string]string{"device_sn": "INV1", "date": date},
+			LimitKey: tKey,
+			Priority: 10,
+		}
+		if err := st.EnqueueTask(ctx, src.ID, tk, currentTime, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Enqueue a different endpoint: plant/details
+	pDetailsTask := connector.Task{
+		Endpoint: "plant/details",
+		Params:   map[string]string{"plant_id": "1"},
+		LimitKey: "plant/details?plant_id=1",
+		Priority: 5,
+	}
+	if err := st.EnqueueTask(ctx, src.ID, pDetailsTask, currentTime, false); err != nil {
+		t.Fatal(err)
+	}
+
+	dayEnergyCalls := 0
+	plantDetailsCalls := 0
+	mock := &mockConnector{
+		execute: func(ctx context.Context, task connector.Task) (connector.Result, error) {
+			if task.Endpoint == "device/inverter/day_energy" {
+				dayEnergyCalls++
+				return connector.Result{}, &connector.RateLimitError{RetryAfter: 5 * time.Minute}
+			}
+			if task.Endpoint == "plant/details" {
+				plantDetailsCalls++
+				return connector.Result{Raw: []byte(`{"error_code": 0}`)}, nil
+			}
+			return connector.Result{Raw: []byte(`{"error_code": 0}`)}, nil
+		},
+	}
+
+	runner := NewRunner(st, src.ID, mock, WithNow(now))
+
+	// Step 1: executes first day_energy, gets 10012
+	proc1, err := runner.Step(ctx)
+	if err != nil || !proc1 {
+		t.Fatalf("proc1=%v, err=%v", proc1, err)
+	}
+
+	// Step 2: during cooldown, remaining day_energy tasks must NOT run, but plant/details SHOULD run!
+	proc2, err := runner.Step(ctx)
+	if err != nil || !proc2 {
+		t.Fatalf("proc2=%v, err=%v", proc2, err)
+	}
+	if plantDetailsCalls != 1 {
+		t.Fatalf("expected plant/details to run, got %d", plantDetailsCalls)
+	}
+	if dayEnergyCalls != 1 {
+		t.Fatalf("expected exactly 1 call to day_energy during cooldown across pending dates, got %d", dayEnergyCalls)
+	}
+
+	// Step 3: further steps before cooldown end should do nothing
+	proc3, err := runner.Step(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proc3 {
+		t.Fatal("expected no tasks to run during cooldown")
+	}
+
+	// Advance time by 5 minutes: day_energy tasks should resume!
+	currentTime = currentTime.Add(5 * time.Minute)
+	proc4, err := runner.Step(ctx)
+	if err != nil || !proc4 {
+		t.Fatalf("proc4=%v, err=%v", proc4, err)
+	}
+	if dayEnergyCalls != 2 {
+		t.Fatalf("expected day_energy calls to resume after cooldown, got %d calls", dayEnergyCalls)
+	}
+}
+
+func TestPlantListRefreshKeepsTimezone(t *testing.T) {
+	st := newTestStore(t, time.Now)
+	ctx := context.Background()
+
+	src, err := st.EnsureSource(ctx, domain.Source{Kind: "growatt", Name: "g1", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	p, err := st.UpsertPlant(ctx, domain.Plant{
+		SourceID:   src.ID,
+		ExternalID: "P1",
+		Name:       "Minha Usina",
+		Timezone:   "America/Sao_Paulo",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Plant list refresh has empty timezone and empty name
+	_, err = st.UpsertPlant(ctx, domain.Plant{
+		SourceID:   src.ID,
+		ExternalID: "P1",
+		Name:       "",
+		Timezone:   "",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := st.GetPlant(ctx, p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Timezone != "America/Sao_Paulo" {
+		t.Fatalf("timezone was erased: got %q, want %q", got.Timezone, "America/Sao_Paulo")
+	}
+	if got.Name != "Minha Usina" {
+		t.Fatalf("name was erased: got %q, want %q", got.Name, "Minha Usina")
+	}
+}
+
+func TestScheduleSkipsPlantWithoutTimezone(t *testing.T) {
+	currentTime := time.Date(2026, 11, 4, 10, 0, 0, 0, time.UTC)
+	now := func() time.Time { return currentTime }
+
+	st := newTestStore(t, now)
+	ctx := context.Background()
+
+	src, err := st.EnsureSource(ctx, domain.Source{Kind: "growatt", Name: "g1", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pValid, err := st.UpsertPlant(ctx, domain.Plant{SourceID: src.ID, ExternalID: "P_VALID", Name: "Valid TZ", Timezone: "America/Sao_Paulo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = st.UpsertDevice(ctx, domain.Device{PlantID: pValid.ID, ExternalID: "INV_V", Name: "Inv V", Kind: "inverter"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pInvalid, err := st.UpsertPlant(ctx, domain.Plant{SourceID: src.ID, ExternalID: "P_INVALID", Name: "Invalid TZ", Timezone: ""})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = st.UpsertDevice(ctx, domain.Device{PlantID: pInvalid.ID, ExternalID: "INV_I", Name: "Inv I", Kind: "inverter"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	conn := growatt.New("https://example.com", "tok", nil)
+
+	if err := ScheduleCompletedDays(ctx, st, src.ID, conn, now); err != nil {
+		t.Fatal(err)
+	}
+
+	var invalidCount int
+	err = st.DB().QueryRowContext(ctx, `SELECT count(*) FROM fetch_tasks WHERE task_key LIKE '%plant_id=P_INVALID%'`).Scan(&invalidCount)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if invalidCount != 0 {
+		t.Fatalf("expected 0 tasks for plant with empty timezone, got %d", invalidCount)
+	}
+
+	err = Backfill(ctx, st, src.ID, conn, pInvalid.ID, "2026-11-01", "2026-11-02")
+	if err == nil {
+		t.Fatal("expected error from Backfill for plant without timezone, got nil")
+	}
+}
+
+func TestSchedulerDiscoversOncePerUTCDay(t *testing.T) {
+	currentTime := time.Date(2026, 11, 4, 10, 0, 0, 0, time.UTC)
+	now := func() time.Time { return currentTime }
+
+	st := newTestStore(t, now)
+	ctx := context.Background()
+
+	src, err := st.EnsureSource(ctx, domain.Source{Kind: "growatt", Name: "g1", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	conn := growatt.New("https://example.com", "tok", nil)
+	logger := log.New(io.Discard, "", 0)
+
+	sched := NewScheduler(st, src.ID, conn, WithSchedulerNow(now), WithSchedulerLogger(logger))
+
+	if err := sched.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	stats, _ := st.GetQueueStats(ctx, src.ID)
+	if stats.Pending < 1 {
+		t.Fatalf("expected discovery enqueued on tick 1, got %d pending", stats.Pending)
+	}
+
+	// Mark discovery task done on Nov 4
+	_, _ = st.DB().ExecContext(ctx, `UPDATE fetch_tasks SET status = 'done', updated_at = ? WHERE task_key LIKE 'plant/list%'`, currentTime.Format(time.RFC3339))
+
+	// Tick 2 (15 minutes later on same UTC day): must NOT trigger discovery again
+	currentTime = currentTime.Add(15 * time.Minute)
+	if err := sched.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var plantListPending int
+	_ = st.DB().QueryRowContext(ctx, `SELECT count(*) FROM fetch_tasks WHERE task_key LIKE 'plant/list%' AND status = 'pending'`).Scan(&plantListPending)
+	if plantListPending != 0 {
+		t.Fatal("discovery should not run twice on the same UTC day")
+	}
+
+	// Tick 3 (next UTC day: Nov 5): triggers discovery again
+	currentTime = time.Date(2026, 11, 5, 1, 0, 0, 0, time.UTC)
+	if err := sched.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	_ = st.DB().QueryRowContext(ctx, `SELECT count(*) FROM fetch_tasks WHERE task_key LIKE 'plant/list%' AND status = 'pending'`).Scan(&plantListPending)
+	if plantListPending != 1 {
+		t.Fatalf("expected discovery to run on new UTC day, got %d pending", plantListPending)
+	}
+}
+
+func TestRefreshFindsNewDevice(t *testing.T) {
+	currentTime := time.Date(2026, 11, 4, 10, 0, 0, 0, time.UTC)
+	now := func() time.Time { return currentTime }
+
+	st := newTestStore(t, now)
+	ctx := context.Background()
+
+	src, err := st.EnsureSource(ctx, domain.Source{Kind: "growatt", Name: "g1", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	devicesList := []connector.DeviceInfo{
+		{PlantExternalID: "P1", ExternalID: "INV1", Name: "Inverter 1", Kind: "inverter"},
+	}
+
+	conn := growatt.New("https://example.com", "tok", nil)
+
+	// 1. Initial discovery produces plant/list, which produces device/list followup
+	discTasks := conn.Discovery()
+	if err := st.EnqueueTask(ctx, src.ID, discTasks[0], currentTime, false); err != nil {
+		t.Fatal(err)
+	}
+
+	mock := &mockConnector{
+		execute: func(ctx context.Context, task connector.Task) (connector.Result, error) {
+			switch task.Endpoint {
+			case "plant/list":
+				// Produces plant P1 and followups
+				return conn.Execute(ctx, task)
+			case "plant/details":
+				return connector.Result{
+					Plants: []connector.PlantInfo{{ExternalID: "P1", Name: "Plant 1", Timezone: "America/Sao_Paulo"}},
+					Raw:    []byte(`{"error_code": 0}`),
+				}, nil
+			case "device/list":
+				return connector.Result{
+					Plants:  []connector.PlantInfo{{ExternalID: "P1", Name: "Plant 1", Timezone: "America/Sao_Paulo"}},
+					Devices: devicesList,
+					Raw:     []byte(`{"error_code": 0}`),
+				}, nil
+			}
+			return connector.Result{Raw: []byte(`{"error_code": 0}`)}, nil
+		},
+	}
+
+	runner := NewRunner(st, src.ID, mock, WithNow(now))
+
+	// Step 1: plant/list runs and enqueues followups (plant/details, device/list)
+	// Mock server for plant/list:
+	mock.execute = func(ctx context.Context, task connector.Task) (connector.Result, error) {
+		if task.Endpoint == "plant/list" {
+			devListParams := map[string]string{"plant_id": "P1", "page": "1", "perpage": "100"}
+			return connector.Result{
+				Plants: []connector.PlantInfo{{ExternalID: "P1", Name: "Plant 1"}},
+				Followups: []connector.Task{
+					{
+						Endpoint:    "device/list",
+						Params:      devListParams,
+						LimitKey:    growatt.MakeLimitKey("device/list", devListParams),
+						Refreshable: true,
+					},
+				},
+				Raw: []byte(`{"error_code": 0}`),
+			}, nil
+		}
+		if task.Endpoint == "device/list" {
+			return connector.Result{
+				Plants:  []connector.PlantInfo{{ExternalID: "P1", Name: "Plant 1", Timezone: "America/Sao_Paulo"}},
+				Devices: devicesList,
+				Raw:     []byte(`{"error_code": 0}`),
+			}, nil
+		}
+		return connector.Result{Raw: []byte(`{"error_code": 0}`)}, nil
+	}
+
+	// Run plant/list
+	proc, err := runner.Step(ctx)
+	if err != nil || !proc {
+		t.Fatalf("plant/list step: proc=%v err=%v", proc, err)
+	}
+
+	// Run device/list
+	proc, err = runner.Step(ctx)
+	if err != nil || !proc {
+		t.Fatalf("device/list step 1: proc=%v err=%v", proc, err)
+	}
+
+	devs, err := st.ListDevices(ctx, 1)
+	if err != nil || len(devs) != 1 {
+		t.Fatalf("expected 1 device, got %d", len(devs))
+	}
+
+	// 2. Later, provider added INV2
+	devicesList = append(devicesList, connector.DeviceInfo{
+		PlantExternalID: "P1", ExternalID: "INV2", Name: "Inverter 2", Kind: "inverter",
+	})
+
+	// Re-run plant/list (e.g. daily discovery refresh). Its followup device/list MUST be refreshed!
+	currentTime = currentTime.Add(24 * time.Hour)
+	if err := st.EnqueueTask(ctx, src.ID, discTasks[0], currentTime, true); err != nil {
+		t.Fatal(err)
+	}
+
+	// Run plant/list again
+	proc, err = runner.Step(ctx)
+	if err != nil || !proc {
+		t.Fatalf("plant/list step 2: proc=%v err=%v", proc, err)
+	}
+
+	// If followups were enqueued with refresh=false, device/list would be skipped because it is 'done'!
+	// With refresh=t.Refreshable, device/list is pending and runs!
+	proc, err = runner.Step(ctx)
+	if err != nil || !proc {
+		t.Fatalf("refreshed device/list should run, but proc=%v err=%v", proc, err)
+	}
+
+	devs, err = st.ListDevices(ctx, 1)
+	if err != nil || len(devs) != 2 {
+		t.Fatalf("expected 2 devices after refresh, got %d", len(devs))
+	}
+}
+
+func TestStartAllSchedules(t *testing.T) {
+	st := newTestStore(t, time.Now)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	os.Setenv("TOKEN_SRC_SCHED", "valid-secret-token")
+	defer os.Unsetenv("TOKEN_SRC_SCHED")
+
+	src, err := st.EnsureSource(ctx, domain.Source{
+		Kind:          "growatt",
+		Name:          "source_sched",
+		CredentialEnv: "TOKEN_SRC_SCHED",
+		ConfigJSON:    `{"base_url": "https://example.com"}`,
+		Enabled:       true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	logger := log.New(io.Discard, "", 0)
+	if err := StartAll(ctx, st, logger); err != nil {
+		t.Fatal(err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	var discoveryCount int
+	err = st.DB().QueryRowContext(ctx, `SELECT count(*) FROM fetch_tasks WHERE source_id = ? AND task_key LIKE 'plant/list%'`, src.ID).Scan(&discoveryCount)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if discoveryCount < 1 {
+		t.Fatal("expected StartAll to run scheduler and enqueue discovery")
+	}
+}
+
+func TestScheduleCatchesUpAfterDowntime(t *testing.T) {
+	currentTime := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	now := func() time.Time { return currentTime }
+
+	st := newTestStore(t, now)
+	ctx := context.Background()
+
+	src, err := st.EnsureSource(ctx, domain.Source{Kind: "growatt", Name: "g1", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	p, err := st.UpsertPlant(ctx, domain.Plant{SourceID: src.ID, ExternalID: "P1", Name: "Plant 1", Timezone: "America/Sao_Paulo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = st.UpsertDevice(ctx, domain.Device{PlantID: p.ID, ExternalID: "INV1", Name: "Inv 1", Kind: "inverter"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	conn := growatt.New("https://example.com", "tok", nil)
+
+	if err := ScheduleCompletedDays(ctx, st, src.ID, conn, now); err != nil {
+		t.Fatal(err)
+	}
+
+	var count int
+	err = st.DB().QueryRowContext(ctx, `SELECT count(*) FROM fetch_tasks WHERE source_id = ? AND json_extract(task_json, '$.endpoint') = 'device/inverter/day_energy'`, src.ID).Scan(&count)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 7 {
+		t.Fatalf("expected 7 completed days enqueued after downtime, got %d", count)
+	}
+}
+
+func TestNoSyntheticDeviceDuringDiscovery(t *testing.T) {
+	currentTime := time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)
+	now := func() time.Time { return currentTime }
+
+	st := newTestStore(t, now)
+	ctx := context.Background()
+
+	src, err := st.EnsureSource(ctx, domain.Source{Kind: "growatt", Name: "g1", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = st.UpsertPlant(ctx, domain.Plant{SourceID: src.ID, ExternalID: "P1", Name: "Plant 1", Timezone: "America/Sao_Paulo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	discoveryTask := connector.Task{
+		Endpoint: "device/list",
+		Params:   map[string]string{"plant_id": "P1", "page": "1", "perpage": "100"},
+		LimitKey: "device/list?page=1&perpage=100&plant_id=P1",
+	}
+	if err := st.EnqueueTask(ctx, src.ID, discoveryTask, currentTime, false); err != nil {
+		t.Fatal(err)
+	}
+
+	conn := growatt.New("https://example.com", "tok", nil)
+
+	if err := ScheduleCompletedDays(ctx, st, src.ID, conn, now); err != nil {
+		t.Fatal(err)
+	}
+
+	var plantEnergyCount int
+	err = st.DB().QueryRowContext(ctx, `SELECT count(*) FROM fetch_tasks WHERE source_id = ? AND json_extract(task_json, '$.endpoint') = 'plant/energy'`, src.ID).Scan(&plantEnergyCount)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plantEnergyCount != 0 {
+		t.Fatalf("expected 0 synthetic plant/energy tasks during discovery, got %d", plantEnergyCount)
+	}
+}
+
+func TestStorageErrorCountsAttempt(t *testing.T) {
+	currentTime := time.Date(2026, 11, 4, 10, 0, 0, 0, time.UTC)
+	now := func() time.Time { return currentTime }
+
+	st := newTestStore(t, now)
+	ctx := context.Background()
+
+	src, err := st.EnsureSource(ctx, domain.Source{Kind: "growatt", Name: "g1", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	task := connector.Task{
+		Endpoint: "plant/details",
+		Params:   map[string]string{"plant_id": "1"},
+		LimitKey: "plant/details?plant_id=1",
+	}
+	if err := st.EnqueueTask(ctx, src.ID, task, currentTime, false); err != nil {
+		t.Fatal(err)
+	}
+
+	mock := &mockConnector{
+		execute: func(ctx context.Context, task connector.Task) (connector.Result, error) {
+			return connector.Result{
+				Plants: []connector.PlantInfo{
+					{ExternalID: "P1", Name: "Plant 1", Timezone: "America/Sao_Paulo"},
+				},
+				Raw: []byte(`{"error_code": 0}`),
+			}, nil
+		},
+	}
+
+	if _, err := st.DB().ExecContext(ctx, `DROP TABLE raw_payloads`); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := NewRunner(st, src.ID, mock, WithNow(now))
+
+	proc, err := runner.Step(ctx)
+	if err == nil {
+		t.Fatal("expected error due to missing raw_payloads table, got nil")
+	}
+	if !proc {
+		t.Fatal("expected task to be processed")
+	}
+
+	var attempts int
+	var status string
+	_ = st.DB().QueryRowContext(ctx, `SELECT attempts, status FROM fetch_tasks WHERE task_key = 'plant/details?plant_id=1'`).Scan(&attempts, &status)
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1", attempts)
+	}
+	if status != "pending" {
+		t.Fatalf("status = %s, want pending", status)
+	}
+}
+
+func TestCancelDuringExecuteDoesNotCountAttempt(t *testing.T) {
+	currentTime := time.Date(2026, 11, 4, 10, 0, 0, 0, time.UTC)
+	now := func() time.Time { return currentTime }
+
+	st := newTestStore(t, now)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	src, err := st.EnsureSource(ctx, domain.Source{Kind: "growatt", Name: "g1", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	task := connector.Task{
+		Endpoint: "plant/details",
+		Params:   map[string]string{"plant_id": "1"},
+		LimitKey: "plant/details?plant_id=1",
+	}
+	if err := st.EnqueueTask(ctx, src.ID, task, currentTime, false); err != nil {
+		t.Fatal(err)
+	}
+
+	mock := &mockConnector{
+		execute: func(ctx context.Context, task connector.Task) (connector.Result, error) {
+			cancel()
+			return connector.Result{}, ctx.Err()
+		},
+	}
+
+	runner := NewRunner(st, src.ID, mock, WithNow(now))
+
+	proc, err := runner.Step(ctx)
+	if proc {
+		t.Fatal("expected proc=false on cancelled context, got true")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+
+	var attempts int
+	_ = st.DB().QueryRowContext(context.Background(), `SELECT attempts FROM fetch_tasks WHERE task_key = 'plant/details?plant_id=1'`).Scan(&attempts)
+	if attempts != 0 {
+		t.Fatalf("attempts = %d, want 0", attempts)
 	}
 }

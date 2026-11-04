@@ -2,16 +2,12 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
-	"net/http"
 	"os"
 	"time"
 
-	"github.com/luigiazoreng/solarguard/internal/connector/growatt"
-	"github.com/luigiazoreng/solarguard/internal/domain"
 	"github.com/luigiazoreng/solarguard/internal/ingest"
 	"github.com/luigiazoreng/solarguard/internal/store"
 )
@@ -21,26 +17,6 @@ func init() {
 	register("backfill", "enfileira coleta histórica para uma planta", runBackfill)
 	register("collect", "executa a fila de coleta e agendamento diário", runCollect)
 	register("queue", "exibe o status e estatísticas da fila de coleta", runQueue)
-}
-
-func loadGrowattConnector(src domain.Source) (*growatt.Connector, error) {
-	if src.CredentialEnv == "" {
-		return nil, fmt.Errorf("fonte %q não tem variável de credencial configurada", src.Name)
-	}
-	token := os.Getenv(src.CredentialEnv)
-	if token == "" {
-		return nil, fmt.Errorf("variável de ambiente %q não definida", src.CredentialEnv)
-	}
-
-	baseURL := "https://openapi.growatt.com"
-	var cfg struct {
-		BaseURL string `json:"base_url"`
-	}
-	if err := json.Unmarshal([]byte(src.ConfigJSON), &cfg); err == nil && cfg.BaseURL != "" {
-		baseURL = cfg.BaseURL
-	}
-
-	return growatt.New(baseURL, token, &http.Client{Timeout: 30 * time.Second}), nil
 }
 
 func runDiscover(ctx context.Context, args []string) error {
@@ -65,7 +41,7 @@ func runDiscover(ctx context.Context, args []string) error {
 		return fmt.Errorf("buscar fonte %q: %w", sourceName, err)
 	}
 
-	conn, err := loadGrowattConnector(src)
+	conn, err := ingest.ResolveSourceConnector(src)
 	if err != nil {
 		return err
 	}
@@ -105,7 +81,7 @@ func runBackfill(ctx context.Context, args []string) error {
 		return fmt.Errorf("buscar fonte %q: %w", sourceName, err)
 	}
 
-	conn, err := loadGrowattConnector(src)
+	conn, err := ingest.ResolveSourceConnector(src)
 	if err != nil {
 		return err
 	}
@@ -140,28 +116,19 @@ func runCollect(ctx context.Context, args []string) error {
 		return fmt.Errorf("buscar fonte %q: %w", sourceName, err)
 	}
 
-	conn, err := loadGrowattConnector(src)
+	conn, err := ingest.ResolveSourceConnector(src)
 	if err != nil {
 		return err
 	}
 
 	logger := log.New(os.Stdout, fmt.Sprintf("[%s] ", src.Name), log.LstdFlags)
 	runner := ingest.NewRunner(st, src.ID, conn, ingest.WithLogger(logger))
+	scheduler := ingest.NewScheduler(st, src.ID, conn, ingest.WithSchedulerLogger(logger))
 
-	// Daily scheduling goroutine
+	// Run scheduler in background
 	go func() {
-		// Run once on startup
-		_ = ingest.ScheduleCompletedDays(ctx, st, src.ID, conn, time.Now)
-
-		ticker := time.NewTicker(15 * time.Minute)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				_ = ingest.ScheduleCompletedDays(ctx, st, src.ID, conn, time.Now)
-			}
+		if err := scheduler.Run(ctx); err != nil {
+			logger.Printf("agendador encerrou: %v", err)
 		}
 	}()
 
