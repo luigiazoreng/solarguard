@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"sort"
 	"strconv"
 	"time"
 
+	"github.com/luigiazoreng/solarguard/internal/analytics"
 	"github.com/luigiazoreng/solarguard/internal/domain"
 	"github.com/luigiazoreng/solarguard/internal/store"
 )
@@ -25,6 +27,37 @@ type ModelMetricRow struct {
 	RMSE  float64
 	R2    float64
 	WAPE  float64
+}
+
+type PredictionInput struct {
+	Expected float64
+	Lower    *float64
+	Upper    *float64
+}
+
+// AggregatePredictions combines predictions across devices for a single date.
+// The 90% band is calculated as: expected total +/- sqrt(sum of squared half-widths),
+// where each half-width = upper - expected; lower bound is clamped at 0.
+func AggregatePredictions(preds []PredictionInput) (totalExpected float64, bandLower float64, bandUpper float64) {
+	if len(preds) == 0 {
+		return 0, 0, 0
+	}
+	var sumExpected float64
+	var sumSquaredHW float64
+	for _, p := range preds {
+		sumExpected += p.Expected
+		hw := 0.0
+		if p.Upper != nil && *p.Upper >= p.Expected {
+			hw = *p.Upper - p.Expected
+		} else if p.Lower != nil && *p.Lower <= p.Expected {
+			hw = p.Expected - *p.Lower
+		}
+		sumSquaredHW += hw * hw
+	}
+	bandHW := math.Sqrt(sumSquaredHW)
+	bandLower = math.Max(0, sumExpected-bandHW)
+	bandUpper = sumExpected + bandHW
+	return sumExpected, bandLower, bandUpper
 }
 
 func (s *Server) handlePlantDetail(w http.ResponseWriter, r *http.Request) {
@@ -100,39 +133,62 @@ func (s *Server) handlePlantDetail(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Calculate period metrics
-	fStart, _, _ := domain.LocalDay(fromDate, plant.Timezone)
-	_, tEnd, _ := domain.LocalDay(toDate, plant.Timezone)
+	// Clamp the end of the range for cards to the plant's newest reading date
+	newestReadingDate, _ := s.store.GetPlantNewestReadingDate(ctx, plantID)
+	cardFromDate := fromDate
+	cardToDate := toDate
+	var dataUntilStr string
 
-	readings, _ := s.store.ListReadingsByPlant(ctx, plantID, fStart, tEnd)
-	var periodMeasured float64
-	var periodOKCount, periodTotalCount int
-	for _, rd := range readings {
-		if devIDPtr != nil && rd.DeviceID != *devIDPtr {
-			continue
-		}
-		if rd.Metric == domain.MetricEnergyKWh {
-			periodTotalCount++
-			if rd.Value != nil {
-				periodMeasured += *rd.Value
-			}
-			if rd.Quality == domain.QualityOK {
-				periodOKCount++
-			}
+	if newestReadingDate != "" && newestReadingDate < toDate {
+		cardToDate = newestReadingDate
+		if t, err := time.Parse(time.DateOnly, newestReadingDate); err == nil {
+			dataUntilStr = t.Format("02/01/2006")
+		} else {
+			dataUntilStr = newestReadingDate
 		}
 	}
-
-	preds, _ := s.store.ListPredictions(ctx, plantID, devIDPtr, fromDate, toDate)
-	var periodExpected float64
-	for _, p := range preds {
-		periodExpected += p.KWhExpected
+	if cardFromDate > cardToDate {
+		cardFromDate = cardToDate
 	}
 
-	lostEnergy, _ := ComputeLostEnergy(ctx, s.store, plantID, devIDPtr, fromDate, toDate)
+	// Compute metrics using single source of truth: internal/analytics
+	genSummary, _ := analytics.Generation(ctx, s.store, plantID, devIDPtr, cardFromDate, cardToDate, "day")
+	evaSummary, _ := analytics.ExpectedVsActual(ctx, s.store, plantID, devIDPtr, cardFromDate, cardToDate)
+	lostSummary, _ := analytics.LostEnergy(ctx, s.store, plantID, cardFromDate, cardToDate)
+	dqSummary, _ := analytics.DataQuality(ctx, s.store, plantID, cardFromDate, cardToDate)
 
+	periodMeasured := genSummary.TotalMeasuredKWh
+
+	pairedDeviceDays := evaSummary.PairedDeviceDays
+	pairedMeasured := evaSummary.PairedMeasuredKWh
+	pairedExpected := evaSummary.PairedExpectedKWh
+	hasPaired := pairedDeviceDays > 0 && pairedExpected > 0
+	var pairedDeviation float64
+	if hasPaired {
+		pairedDeviation = ((pairedMeasured - pairedExpected) / pairedExpected) * 100.0
+	}
+
+	periodLostEnergy := lostSummary.LostEnergyKWh
+
+	var okReadings, totalReadings int
 	var qualityPct float64
-	if periodTotalCount > 0 {
-		qualityPct = (float64(periodOKCount) / float64(periodTotalCount)) * 100.0
+	if devIDPtr != nil {
+		for _, d := range dqSummary.Devices {
+			if d.DeviceID == *devIDPtr {
+				okReadings = d.OKDays
+				totalReadings = d.TotalDays
+				qualityPct = d.PercentOK
+				break
+			}
+		}
+	} else {
+		for _, d := range dqSummary.Devices {
+			okReadings += d.OKDays
+			totalReadings += d.TotalDays
+		}
+		if totalReadings > 0 {
+			qualityPct = (float64(okReadings) / float64(totalReadings)) * 100.0
+		}
 	}
 
 	// Device summaries
@@ -196,17 +252,23 @@ func (s *Server) handlePlantDetail(w http.ResponseWriter, r *http.Request) {
 	data := s.baseTemplateData(r, plant.Name, "overview")
 	data["Plant"] = plant
 	data["Devices"] = devices
+	data["TotalDevices"] = len(devices)
 	data["Period"] = period
 	data["PeriodLabel"] = periodLabel
 	data["FromDate"] = fromDate
 	data["ToDate"] = toDate
+	data["DataUntilStr"] = dataUntilStr
 	data["SelectedDevice"] = selectedDevice
 	data["PeriodMeasured"] = periodMeasured
-	data["PeriodExpected"] = periodExpected
-	data["PeriodLostEnergy"] = lostEnergy
+	data["HasPaired"] = hasPaired
+	data["PairedMeasured"] = pairedMeasured
+	data["PairedExpected"] = pairedExpected
+	data["PairedDeviation"] = pairedDeviation
+	data["PairedDeviceDays"] = pairedDeviceDays
+	data["PeriodLostEnergy"] = periodLostEnergy
 	data["PeriodQualityPct"] = qualityPct
-	data["PeriodOKReadings"] = periodOKCount
-	data["PeriodTotalReadings"] = periodTotalCount
+	data["PeriodOKReadings"] = okReadings
+	data["PeriodTotalReadings"] = totalReadings
 	data["ActiveModelName"] = activeModelName
 	data["DeviceSummaries"] = devSummaries
 	if hasActiveModel {
@@ -341,30 +403,8 @@ func (s *Server) handlePlantSeries(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 3. Fetch predictions in [from, to] + future
-	futureTo := tTo.AddDate(0, 0, 14).Format(time.DateOnly)
-	allPreds, _ := s.store.ListPredictions(ctx, plantID, devIDPtr, from, futureTo)
-
-	type predEntry struct {
-		expected float64
-		lower    *float64
-		upper    *float64
-	}
-	predsByDate := make(map[string]*predEntry)
-	for _, p := range allPreds {
-		pe, exists := predsByDate[p.Date]
-		if !exists {
-			pe = &predEntry{lower: p.KWhLower, upper: p.KWhUpper}
-			predsByDate[p.Date] = pe
-		}
-		pe.expected += p.KWhExpected
-	}
-
 	var measuredOK []*float64
 	var measuredNotOK []NotOKReading
-	var expected []*float64
-	var bandLower []*float64
-	var bandUpper []*float64
 
 	for _, d := range dates {
 		entry := byDate[d]
@@ -375,14 +415,35 @@ func (s *Server) handlePlantSeries(w http.ResponseWriter, r *http.Request) {
 			v := entry.measuredOKSum
 			measuredOK = append(measuredOK, &v)
 		} else {
+			// No reading on this date (offline / missing): gap (nil), not zero!
 			measuredOK = append(measuredOK, nil)
 		}
+	}
 
-		if pe, ok := predsByDate[d]; ok {
-			eVal := pe.expected
-			expected = append(expected, &eVal)
-			bandLower = append(bandLower, pe.lower)
-			bandUpper = append(bandUpper, pe.upper)
+	// 3. Fetch predictions in [from, to] + future
+	futureTo := tTo.AddDate(0, 0, 14).Format(time.DateOnly)
+	allPreds, _ := s.store.ListPredictions(ctx, plantID, devIDPtr, from, futureTo)
+
+	predsByDate := make(map[string][]PredictionInput)
+	for _, p := range allPreds {
+		predsByDate[p.Date] = append(predsByDate[p.Date], PredictionInput{
+			Expected: p.KWhExpected,
+			Lower:    p.KWhLower,
+			Upper:    p.KWhUpper,
+		})
+	}
+
+	var expected []*float64
+	var bandLower []*float64
+	var bandUpper []*float64
+
+	for _, d := range dates {
+		items := predsByDate[d]
+		if len(items) > 0 {
+			totExp, bLow, bUp := AggregatePredictions(items)
+			expected = append(expected, &totExp)
+			bandLower = append(bandLower, &bLow)
+			bandUpper = append(bandUpper, &bUp)
 		} else {
 			expected = append(expected, nil)
 			bandLower = append(bandLower, nil)
@@ -397,9 +458,10 @@ func (s *Server) handlePlantSeries(w http.ResponseWriter, r *http.Request) {
 	for d := tTo.AddDate(0, 0, 1); !d.After(tTo.AddDate(0, 0, 7)); d = d.AddDate(0, 0, 1) {
 		dStr := d.Format(time.DateOnly)
 		forecastDates = append(forecastDates, dStr)
-		if pe, ok := predsByDate[dStr]; ok {
-			v := pe.expected
-			forecastValues = append(forecastValues, &v)
+		items := predsByDate[dStr]
+		if len(items) > 0 {
+			totExp, _, _ := AggregatePredictions(items)
+			forecastValues = append(forecastValues, &totExp)
 		} else {
 			forecastValues = append(forecastValues, nil)
 		}

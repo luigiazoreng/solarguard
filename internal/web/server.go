@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/luigiazoreng/solarguard/internal/labels"
+	"github.com/luigiazoreng/solarguard/internal/mcpserver"
 	"github.com/luigiazoreng/solarguard/internal/store"
 )
 
@@ -30,6 +32,7 @@ var (
 type Config struct {
 	Addr          string
 	AdminPassword string
+	MCPToken      string
 	Store         *store.Store
 	Logger        *slog.Logger
 	Now           func() time.Time
@@ -42,6 +45,7 @@ type Server struct {
 	templates      map[string]*template.Template
 	mux            *http.ServeMux
 	handler        http.Handler
+	mcpHandler     http.Handler
 	noAuthRequired bool
 	testCSRFToken  string
 }
@@ -74,16 +78,31 @@ func NewServer(cfg Config) (*Server, error) {
 		s.noAuthRequired = true
 	}
 
+	// Initialize MCP HTTPHandler if token is provided
+	if strings.TrimSpace(cfg.MCPToken) != "" {
+		mcpH, err := mcpserver.HTTPHandler(cfg.Store, cfg.MCPToken)
+		if err != nil {
+			return nil, fmt.Errorf("iniciar handler MCP: %w", err)
+		}
+		s.mcpHandler = mcpH
+	}
+
 	// Parse HTML templates per page to avoid namespace collisions on "content"
 	funcMap := template.FuncMap{
-		"formatFloat":    FormatFloat,
-		"formatInt":      FormatInt,
-		"formatPercent":  FormatPercent,
-		"formatDate":     FormatDate,
-		"formatTime":     FormatTimeInZone,
-		"renderMarkdown": RenderMarkdown,
-		"add":            func(a, b int) int { return a + b },
-		"sub":            func(a, b int) int { return a - b },
+		"formatFloat":        FormatFloat,
+		"formatInt":          FormatInt,
+		"formatPercent":      FormatPercent,
+		"formatDate":         FormatDate,
+		"formatTime":         FormatTimeInZone,
+		"renderMarkdown":     RenderMarkdown,
+		"labelsRule":         labels.Rule,
+		"labelsReason":       labels.Reason,
+		"labelsSeverity":     labels.Severity,
+		"labelsStatus":       labels.Status,
+		"labelsPipelineStep": labels.PipelineStep,
+		"printFloat":         func(f float64) string { return fmt.Sprintf("%v", f) },
+		"add":                func(a, b int) int { return a + b },
+		"sub":                func(a, b int) int { return a - b },
 		"derefFloat": func(f *float64) float64 {
 			if f == nil {
 				return 0
@@ -163,12 +182,30 @@ func (s *Server) render(w http.ResponseWriter, page string, data any) error {
 	return tmpl.ExecuteTemplate(w, templateName, data)
 }
 
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/mcp" || strings.HasPrefix(r.URL.Path, "/mcp/") {
+		if s.mcpHandler == nil {
+			s.cfg.Logger.Info("MCP endpoint accessed but disabled (SOLARGUARD_MCP_TOKEN not set)")
+			http.Error(w, "MCP disabled", http.StatusNotFound)
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+		s.mcpHandler.ServeHTTP(w, r)
+		return
+	}
+	s.handler.ServeHTTP(w, r)
+}
+
 func (s *Server) Handler() http.Handler {
-	return s.handler
+	return s
 }
 
 func (s *Server) NoAuthRequired() bool {
 	return s.noAuthRequired
+}
+
+func (s *Server) ActiveSessionCount() int {
+	return s.sm.ActiveSessionCount()
 }
 
 func (s *Server) TestCSRFToken() string {
@@ -267,6 +304,10 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		}
 
 		if s.noAuthRequired {
+			if !IsLoopbackHost(r.Host) {
+				http.Error(w, "Acesso proibido: host não permitido em modo local sem senha", http.StatusForbidden)
+				return
+			}
 			// In no-auth loopback mode, ensure session exists for CSRF protection
 			var sess *Session
 			cookie, err := r.Cookie("solarguard_session")

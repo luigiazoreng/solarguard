@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/luigiazoreng/solarguard/internal/domain"
 	"github.com/luigiazoreng/solarguard/internal/store"
@@ -14,6 +15,7 @@ type AlertListItem struct {
 	Alert      store.Alert
 	PlantName  string
 	DeviceName string
+	DetectedOn string
 }
 
 type DayValueEvidence struct {
@@ -22,6 +24,27 @@ type DayValueEvidence struct {
 	Expected   *float64 `json:"expected"`
 	PeerMedian *float64 `json:"peer_median"`
 	Reason     string   `json:"reason"`
+}
+
+func parseDetectedOn(evidenceJSON string, fallback time.Time, loc *time.Location) string {
+	if evidenceJSON != "" {
+		var ev struct {
+			DetectedOn string `json:"detected_on"`
+		}
+		if err := json.Unmarshal([]byte(evidenceJSON), &ev); err == nil && ev.DetectedOn != "" {
+			if t, err := time.Parse(time.DateOnly, ev.DetectedOn); err == nil {
+				return t.Format("02/01/2006")
+			}
+			return ev.DetectedOn
+		}
+	}
+	if !fallback.IsZero() {
+		if loc != nil {
+			fallback = fallback.In(loc)
+		}
+		return fallback.Format("02/01/2006")
+	}
+	return "-"
 }
 
 func (s *Server) handleAlertsList(w http.ResponseWriter, r *http.Request) {
@@ -70,24 +93,31 @@ func (s *Server) handleAlertsList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	plants, _ := s.store.ListPlants(ctx)
-	plantMap := make(map[int64]string)
+	plantMap := make(map[int64]domain.Plant)
 	for _, p := range plants {
-		plantMap[p.ID] = p.Name
+		plantMap[p.ID] = p
 	}
 
 	var items []AlertListItem
 	for _, a := range alerts {
-		pName := plantMap[a.PlantID]
+		p := plantMap[a.PlantID]
+		pName := p.Name
 		dName := ""
 		if a.DeviceID != nil {
 			if dev, err := s.store.GetDevice(ctx, *a.DeviceID); err == nil {
 				dName = dev.Name
 			}
 		}
+		var loc *time.Location
+		if p.Timezone != "" {
+			loc, _ = time.LoadLocation(p.Timezone)
+		}
+		detOn := parseDetectedOn(a.EvidenceJSON, a.CreatedAt, loc)
 		items = append(items, AlertListItem{
 			Alert:      a,
 			PlantName:  pName,
 			DeviceName: dName,
+			DetectedOn: detOn,
 		})
 	}
 
@@ -131,6 +161,11 @@ func (s *Server) handleAlertDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	loc, err := time.LoadLocation(plant.Timezone)
+	if err != nil {
+		loc = time.UTC
+	}
+
 	var devPtr *domain.Device
 	if alert.DeviceID != nil {
 		if dev, err := s.store.GetDevice(ctx, *alert.DeviceID); err == nil {
@@ -141,15 +176,109 @@ func (s *Server) handleAlertDetail(w http.ResponseWriter, r *http.Request) {
 	// Parse evidence JSON
 	var evidenceValues []DayValueEvidence
 	var evidenceParams map[string]any
+	var detectedOn string
+	var totalValues int
+	var numDays int
+	var firstDate string
 
 	if alert.EvidenceJSON != "" {
 		var ev struct {
-			Params map[string]any     `json:"params"`
-			Values []DayValueEvidence `json:"values"`
+			Params      map[string]any     `json:"params"`
+			Values      []DayValueEvidence `json:"values"`
+			DetectedOn  string             `json:"detected_on"`
+			TotalValues int                `json:"total_values"`
+			NumDays     int                `json:"num_days"`
+			FirstDate   string             `json:"first_date"`
 		}
 		if err := json.Unmarshal([]byte(alert.EvidenceJSON), &ev); err == nil {
 			evidenceValues = ev.Values
 			evidenceParams = ev.Params
+			detectedOn = ev.DetectedOn
+			totalValues = ev.TotalValues
+			numDays = ev.NumDays
+			firstDate = ev.FirstDate
+		}
+	}
+
+	if detectedOn != "" {
+		if t, err := time.Parse(time.DateOnly, detectedOn); err == nil {
+			detectedOn = t.Format("02/01/2006")
+		}
+	} else if !alert.CreatedAt.IsZero() {
+		detectedOn = alert.CreatedAt.In(loc).Format("02/01/2006")
+	}
+
+	// Fill the Esperado column from active model predictions when evidence has none
+	if len(evidenceValues) > 0 {
+		var minDate, maxDate string
+		needsPreds := false
+		for _, ev := range evidenceValues {
+			if ev.Expected == nil {
+				needsPreds = true
+			}
+			if minDate == "" || ev.Date < minDate {
+				minDate = ev.Date
+			}
+			if maxDate == "" || ev.Date > maxDate {
+				maxDate = ev.Date
+			}
+		}
+
+		if needsPreds && minDate != "" && maxDate != "" {
+			predsMap, err := s.store.GetActivePredictionsMap(ctx, alert.PlantID, minDate, maxDate)
+			if err == nil {
+				for i := range evidenceValues {
+					if evidenceValues[i].Expected == nil {
+						dStr := evidenceValues[i].Date
+						if alert.DeviceID != nil {
+							if exp, ok := predsMap[*alert.DeviceID][dStr]; ok {
+								val := exp
+								evidenceValues[i].Expected = &val
+							}
+						} else {
+							var sumExp float64
+							var found bool
+							for _, devMap := range predsMap {
+								if exp, ok := devMap[dStr]; ok {
+									sumExp += exp
+									found = true
+								}
+							}
+							if found {
+								val := sumExp
+								evidenceValues[i].Expected = &val
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	isCapped := totalValues > len(evidenceValues) && len(evidenceValues) > 0
+
+	// Details for device_offline
+	isDeviceOffline := alert.Rule == "device_offline"
+	lastContactStr := "-"
+	daysOffline := numDays
+	if isDeviceOffline {
+		if devPtr != nil && devPtr.LastSeenAt != nil {
+			lastContactStr = devPtr.LastSeenAt.In(loc).Format("02/01/2006 15:04")
+		} else if firstDate != "" {
+			if t, err := time.Parse(time.DateOnly, firstDate); err == nil {
+				lastContactStr = t.Format("02/01/2006")
+			} else {
+				lastContactStr = firstDate
+			}
+		}
+		if daysOffline <= 0 && firstDate != "" {
+			tFirst, err := time.Parse(time.DateOnly, firstDate)
+			if err == nil {
+				daysOffline = int(s.cfg.Now().In(loc).Sub(tFirst).Hours()/24) + 1
+			}
+		}
+		if daysOffline <= 0 {
+			daysOffline = 1
 		}
 	}
 
@@ -157,8 +286,15 @@ func (s *Server) handleAlertDetail(w http.ResponseWriter, r *http.Request) {
 	data["Alert"] = alert
 	data["Plant"] = plant
 	data["Device"] = devPtr
+	data["DetectedOn"] = detectedOn
 	data["EvidenceValues"] = evidenceValues
 	data["EvidenceParams"] = evidenceParams
+	data["IsCapped"] = isCapped
+	data["TotalValues"] = totalValues
+	data["IsDeviceOffline"] = isDeviceOffline
+	data["LastContactStr"] = lastContactStr
+	data["DaysOffline"] = daysOffline
+	data["OfflineDisclaimer"] = "Não indica a causa: o inversor pode estar funcionando com o coletor de dados desligado."
 
 	if err := s.render(w, "alert_detail", data); err != nil {
 		s.cfg.Logger.Error("render alert detail", "err", err)
@@ -181,10 +317,6 @@ func (s *Server) handleAlertAck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if r.Header.Get("HX-Request") == "true" {
-		http.Redirect(w, r, "/alerts/"+idStr, http.StatusSeeOther)
-		return
-	}
 	http.Redirect(w, r, "/alerts/"+idStr, http.StatusSeeOther)
 }
 
@@ -204,9 +336,5 @@ func (s *Server) handleAlertResolve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if r.Header.Get("HX-Request") == "true" {
-		http.Redirect(w, r, "/alerts/"+idStr, http.StatusSeeOther)
-		return
-	}
 	http.Redirect(w, r, "/alerts/"+idStr, http.StatusSeeOther)
 }

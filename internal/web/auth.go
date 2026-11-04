@@ -51,23 +51,41 @@ func generateRandomToken(bytesLen int) (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
+func (sm *SessionManager) purgeExpiredLocked(now time.Time) {
+	for k, v := range sm.sessions {
+		if now.After(v.ExpiresAt) {
+			delete(sm.sessions, k)
+		}
+	}
+	for ip, attempt := range sm.failures {
+		if !attempt.lockoutUntil.IsZero() && now.After(attempt.lockoutUntil) {
+			delete(sm.failures, ip)
+		} else if attempt.lockoutUntil.IsZero() && now.Sub(attempt.lastFailure) > time.Hour {
+			delete(sm.failures, ip)
+		}
+	}
+}
+
 // Authenticate verifies password against adminPassword in constant time.
 // It enforces a per-IP delay and lockout after 5 consecutive failures.
+// The mutex is released before sleeping on failure so other requests are not blocked.
 func (sm *SessionManager) Authenticate(password, remoteIP string) (*Session, error) {
 	sm.mu.Lock()
-	defer sm.mu.Unlock()
-
 	now := sm.now()
+	sm.purgeExpiredLocked(now)
 
 	// Check lockout
 	ipKey := extractIP(remoteIP)
 	attempt, exists := sm.failures[ipKey]
 	if exists && attempt.count >= 5 {
 		if now.Before(attempt.lockoutUntil) {
+			sm.mu.Unlock()
 			return nil, ErrTooManyRequests
 		}
 		// Lockout expired, reset
 		delete(sm.failures, ipKey)
+		attempt = nil
+		exists = false
 	}
 
 	// Constant-time compare
@@ -82,7 +100,8 @@ func (sm *SessionManager) Authenticate(password, remoteIP string) (*Session, err
 		if attempt.count >= 5 {
 			attempt.lockoutUntil = now.Add(15 * time.Minute)
 		}
-		// Simple delay to slow brute force
+		// Release mutex BEFORE sleeping to not block other users
+		sm.mu.Unlock()
 		time.Sleep(50 * time.Millisecond)
 		return nil, ErrInvalidPassword
 	}
@@ -98,6 +117,8 @@ func (sm *SessionManager) Authenticate(password, remoteIP string) (*Session, err
 		ExpiresAt: now.Add(12 * time.Hour),
 	}
 	sm.sessions[token] = sess
+	sm.mu.Unlock()
+
 	return sess, nil
 }
 
@@ -106,12 +127,15 @@ func (sm *SessionManager) CreateAnonymousSession() *Session {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
+	now := sm.now()
+	sm.purgeExpiredLocked(now)
+
 	token, _ := generateRandomToken(32)
 	csrfToken, _ := generateRandomToken(32)
 	sess := &Session{
 		Token:     token,
 		CSRFToken: csrfToken,
-		ExpiresAt: sm.now().Add(12 * time.Hour),
+		ExpiresAt: now.Add(12 * time.Hour),
 	}
 	sm.sessions[token] = sess
 	return sess
@@ -137,6 +161,12 @@ func (sm *SessionManager) RevokeSession(token string) {
 	delete(sm.sessions, token)
 }
 
+func (sm *SessionManager) ActiveSessionCount() int {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	return len(sm.sessions)
+}
+
 func extractIP(remoteAddr string) string {
 	host, _, err := net.SplitHostPort(remoteAddr)
 	if err != nil {
@@ -152,6 +182,28 @@ func IsLoopback(addr string) bool {
 		host = addr
 	}
 	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// IsLoopbackHost checks whether a Host header (host or host:port) is loopback.
+// Matches localhost, 127.0.0.1, [::1], ::1 with any port to protect against DNS rebinding.
+func IsLoopbackHost(hostHeader string) bool {
+	host := strings.TrimSpace(hostHeader)
+	if host == "" {
+		return false
+	}
+	h, _, err := net.SplitHostPort(host)
+	if err == nil {
+		host = h
+	}
+	// Strip IPv6 brackets if present
+	host = strings.TrimPrefix(host, "[")
+	host = strings.TrimSuffix(host, "]")
+
+	if strings.EqualFold(host, "localhost") {
 		return true
 	}
 	ip := net.ParseIP(host)
@@ -177,7 +229,6 @@ func VerifyOrigin(r *http.Request) bool {
 		return true
 	}
 
-	// Compare host portion
 	clean := strings.TrimPrefix(origin, "https://")
 	clean = strings.TrimPrefix(clean, "http://")
 	slash := strings.Index(clean, "/")

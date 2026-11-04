@@ -7,7 +7,7 @@
       <div style="color:var(--text-muted);font-size:0.875rem;">
         Usina: <strong>{{.Plant.Name}}</strong>
         {{if .Device}} • Dispositivo: <strong>{{.Device.Name}} ({{.Device.ExternalID}})</strong>{{end}}
-        • Regra: <code>{{.Alert.Rule}}</code>
+        • Regra: <strong>{{labelsRule .Alert.Rule}}</strong>
       </div>
     </div>
     <div style="display:flex;gap:8px;align-items:center;">
@@ -40,7 +40,7 @@
   <div class="card">
     <div class="card-title">Período do Incidente</div>
     <div class="card-value" style="font-size:1.15rem;">{{formatDate .Alert.FirstDate}} a {{formatDate .Alert.LastDate}}</div>
-    <div class="card-sub">Detectado em: {{formatTime (makeTimePtr .Alert.CreatedAt) .Plant.Timezone}}</div>
+    <div class="card-sub">Detectado em: {{.DetectedOn}}</div>
   </div>
 
   <div class="card">
@@ -77,33 +77,51 @@
   </div>
 </div>
 
-<!-- Tabela de Evidências -->
+<!-- Tabela de Evidências ou Detalhes Offline -->
 <h3 style="font-size:1.15rem;margin-bottom:8px;">Evidência Determinística</h3>
-{{if .EvidenceValues}}
-<div class="table-container">
-  <table>
-    <thead>
-      <tr>
-        <th>Data</th>
-        <th>Valor Medido (kWh)</th>
-        <th>Esperado (kWh)</th>
-        <th>Mediana dos Pares</th>
-        <th>Motivo / Diagnóstico</th>
-      </tr>
-    </thead>
-    <tbody>
-      {{range .EvidenceValues}}
-      <tr>
-        <td>{{formatDate .Date}}</td>
-        <td>{{if .Value}}{{formatFloat (derefFloat .Value) 2}}{{else}}-{{end}}</td>
-        <td>{{if .Expected}}{{formatFloat (derefFloat .Expected) 2}}{{else}}-{{end}}</td>
-        <td>{{if .PeerMedian}}{{formatFloat (derefFloat .PeerMedian) 2}}{{else}}-{{end}}</td>
-        <td>{{if .Reason}}<code>{{.Reason}}</code>{{else}}-{{end}}</td>
-      </tr>
-      {{end}}
-    </tbody>
-  </table>
+
+{{if .IsDeviceOffline}}
+<div class="card" style="margin-bottom:24px;">
+  <div style="font-size:1.05rem;margin-bottom:8px;">
+    <strong>Último contato:</strong> {{.LastContactStr}}
+  </div>
+  <div style="font-size:1.05rem;margin-bottom:12px;color:var(--danger);font-weight:600;">
+    Sem comunicação há {{.DaysOffline}} {{if eq .DaysOffline 1}}dia{{else}}dias{{end}}
+  </div>
+  <div class="note-box" style="margin:0;background:var(--card-bg);border-color:var(--border);">
+    {{.OfflineDisclaimer}}
+  </div>
 </div>
+{{else if .EvidenceValues}}
+  {{if .IsCapped}}
+  <div style="margin-bottom:8px;font-size:0.875rem;color:var(--text-muted);font-weight:500;">
+    Mostrando 30 de {{.TotalValues}} dias
+  </div>
+  {{end}}
+  <div class="table-container">
+    <table>
+      <thead>
+        <tr>
+          <th>Data</th>
+          <th>Valor Medido (kWh)</th>
+          <th>Esperado (kWh)</th>
+          <th>Mediana dos Pares</th>
+          <th>Motivo</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .EvidenceValues}}
+        <tr>
+          <td>{{formatDate .Date}}</td>
+          <td>{{if .Value}}{{formatFloat (derefFloat .Value) 2}}{{else}}-{{end}}</td>
+          <td>{{if .Expected}}{{formatFloat (derefFloat .Expected) 2}}{{else}}-{{end}}</td>
+          <td>{{if .PeerMedian}}{{formatFloat (derefFloat .PeerMedian) 2}}{{else}}-{{end}}</td>
+          <td>{{if .Reason}}{{labelsReason .Reason}}{{else}}-{{end}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
 {{else}}
 <div class="card" style="margin-bottom:24px;">
   <pre style="margin:0;font-size:0.85rem;white-space:pre-wrap;">{{.Alert.EvidenceJSON}}</pre>

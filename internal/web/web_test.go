@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"math"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
 	"os"
@@ -13,9 +16,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luigiazoreng/solarguard/internal/analytics"
 	"github.com/luigiazoreng/solarguard/internal/domain"
 	"github.com/luigiazoreng/solarguard/internal/store"
 	"github.com/luigiazoreng/solarguard/internal/web"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func newWebTestStore(t *testing.T) *store.Store {
@@ -678,15 +683,20 @@ func TestAlerts_AckAndResolveUpdateStatusKeepNote(t *testing.T) {
 	}
 }
 
-// 8. Lost energy calculation against hand-computed values.
-func TestPlant_LostEnergyCalculation(t *testing.T) {
+// 8. Analytics cards, lost energy, and date clamping against hand-computed values.
+func TestPlant_AnalyticsCardsAndClamping(t *testing.T) {
 	// Hand-computed scenario:
-	// Day 1: OK, Expected = 20.0, Measured = 19.5 -> Lost energy = 0.0
-	// Day 2: Invalid (zero_generation), Expected = 22.0, Measured = 0.0 -> Lost energy = 22.0
-	// Day 3: Suspect (stuck_value), Expected = 18.0, Measured = 5.0 -> Lost energy = 18.0
-	// Day 4: Missing reading, Expected = 25.0 -> Lost energy = 25.0
-	// Total Expected = 85.0
-	// Hand-computed Lost Energy = 22.0 + 18.0 + 25.0 = 65.0 kWh.
+	// Day 1 (2026-05-01): OK, Expected = 20.0, Measured = 19.5 -> Lost = 0.0
+	// Day 2 (2026-05-02): Invalid (zero_generation), Expected = 22.0, Measured = 0.0 -> Lost = 22.0
+	// Day 3 (2026-05-03): Suspect (stuck_value), Expected = 18.0, Measured = 5.0 -> Lost = 18.0
+	// Day 4 (2026-05-04): Missing reading, Expected = 25.0 -> Lost = 25.0
+	// Total Expected (4 days) = 85.0 kWh
+	// Over full range [05-01, 05-04]: Lost energy = 22.0 + 18.0 + 25.0 = 65.0 kWh
+	// When clamped to newest reading date (2026-05-03):
+	// Range is [05-01, 05-03] (3 days): Lost energy = 22.0 + 18.0 = 40.0 kWh
+	// Hand-computed Data Quality on clamped range: 1 OK day out of 3 days = 33.33%
+	// Hand-computed Paired Expected vs Actual on clamped range:
+	// Paired: Day 1 (19.5 vs 20.0), PairedDeviceDays = 1, deviation = (19.5 - 20.0) / 20.0 = -2.5%
 	st := newWebTestStore(t)
 	p, d1, _ := seedPlantWithDevices(t, st, "P1", "Planta 1")
 	ctx := context.Background()
@@ -751,14 +761,71 @@ func TestPlant_LostEnergyCalculation(t *testing.T) {
 		},
 	})
 
-	lostEnergy, err := web.ComputeLostEnergy(ctx, st, p.ID, nil, "2026-05-01", "2026-05-04")
+	// 1. Verify single source of truth analytics on full range
+	lostFull, err := analytics.LostEnergy(ctx, st, p.ID, "2026-05-01", "2026-05-04")
 	if err != nil {
-		t.Fatalf("compute lost energy: %v", err)
+		t.Fatalf("analytics.LostEnergy full: %v", err)
+	}
+	if lostFull.LostEnergyKWh != 65.0 {
+		t.Errorf("expected full range lost energy 65.0, got %v", lostFull.LostEnergyKWh)
 	}
 
-	expectedLost := 65.0
-	if lostEnergy != expectedLost {
-		t.Errorf("expected lost energy %.2f, got %.2f", expectedLost, lostEnergy)
+	// 2. Verify analytics on clamped range
+	lostClamped, err := analytics.LostEnergy(ctx, st, p.ID, "2026-05-01", "2026-05-03")
+	if err != nil {
+		t.Fatalf("analytics.LostEnergy clamped: %v", err)
+	}
+	if lostClamped.LostEnergyKWh != 40.0 {
+		t.Errorf("expected clamped lost energy 40.0, got %v", lostClamped.LostEnergyKWh)
+	}
+
+	dqClamped, err := analytics.DataQuality(ctx, st, p.ID, "2026-05-01", "2026-05-03")
+	if err != nil {
+		t.Fatalf("analytics.DataQuality: %v", err)
+	}
+	if len(dqClamped.Devices) > 0 {
+		d0 := dqClamped.Devices[0]
+		if d0.TotalDays != 3 || d0.OKDays != 1 {
+			t.Errorf("expected 1 OK day out of 3 total days, got %d of %d", d0.OKDays, d0.TotalDays)
+		}
+	}
+
+	// 3. Verify server renders clamped card with mandatory Brazilian Portuguese wording
+	cfg := web.Config{
+		Addr:          "127.0.0.1:8080",
+		AdminPassword: "",
+		Store:         st,
+		Now: func() time.Time {
+			return time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+		},
+	}
+	srv, _ := web.NewServer(cfg)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	resp, err := ts.Client().Get(fmt.Sprintf("%s/plants/%d?period=30", ts.URL, p.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	rawBody, _ := io.ReadAll(resp.Body)
+	body := string(rawBody)
+
+	// Check clamped date banner
+	if !strings.Contains(body, "Dados até 03/05/2026") {
+		t.Errorf("expected page to show 'Dados até 03/05/2026', got HTML without it")
+	}
+	// Check mandatory wording for lost energy
+	if !strings.Contains(body, "Energia esperada sem medição válida") {
+		t.Errorf("expected card title 'Energia esperada sem medição válida'")
+	}
+	if !strings.Contains(body, "Estimativa: pode ter sido gerada e não registrada.") {
+		t.Errorf("expected mandatory sub-text 'Estimativa: pode ter sido gerada e não registrada.'")
+	}
+	// Check Medida x esperada
+	if !strings.Contains(body, "Medida x esperada") {
+		t.Errorf("expected card title 'Medida x esperada'")
 	}
 }
 
@@ -825,5 +892,495 @@ func TestSecurity_NoPageShowsEnvVarValue(t *testing.T) {
 				t.Errorf("/manage should indicate that the variable is 'Configurada'")
 			}
 		}
+	}
+}
+
+// 10. Chart 90% band aggregation: aggregate of 2 devices with half-width 3 and 4 gives 5.
+func TestChart_BandAggregation_3Plus4Gives5(t *testing.T) {
+	upper1 := 13.0
+	upper2 := 24.0
+	preds := []web.PredictionInput{
+		{Expected: 10.0, Upper: &upper1}, // hw = 3
+		{Expected: 20.0, Upper: &upper2}, // hw = 4
+	}
+	totExp, lower, upper := web.AggregatePredictions(preds)
+	if totExp != 30.0 {
+		t.Errorf("expected total 30.0, got %v", totExp)
+	}
+	hw := upper - totExp
+	if math.Abs(hw-5.0) > 1e-9 {
+		t.Errorf("expected aggregate half-width 5.0, got %v", hw)
+	}
+	if lower != 25.0 {
+		t.Errorf("expected lower 25.0, got %v", lower)
+	}
+	if upper != 35.0 {
+		t.Errorf("expected upper 35.0, got %v", upper)
+	}
+}
+
+// 11. DNS rebinding protection: reject non-loopback Host headers in no-password loopback mode.
+func TestSecurity_LoopbackHostHeaderRejection(t *testing.T) {
+	st := newWebTestStore(t)
+	cfg := web.Config{
+		Addr:          "127.0.0.1:8080",
+		AdminPassword: "",
+		Store:         st,
+	}
+	srv, err := web.NewServer(cfg)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	client := ts.Client()
+
+	// External / malicious Host headers must be rejected with 403 Forbidden
+	for _, badHost := range []string{"evil.com", "attacker.domain:8080", "192.168.1.50:8080"} {
+		req, _ := http.NewRequest("GET", ts.URL+"/", nil)
+		req.Host = badHost
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("expected 403 Forbidden for bad host %q, got %d", badHost, resp.StatusCode)
+		}
+	}
+
+	// Loopback Host headers must be accepted with 200 OK
+	for _, goodHost := range []string{"localhost", "localhost:8080", "127.0.0.1:8080", "[::1]:8080"} {
+		req, _ := http.NewRequest("GET", ts.URL+"/", nil)
+		req.Host = goodHost
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("expected 200 OK for valid loopback host %q, got %d", goodHost, resp.StatusCode)
+		}
+	}
+}
+
+// 12. Session reuse in no-password mode: multiple requests reuse the existing session.
+func TestSecurity_SessionReuseInLoopbackMode(t *testing.T) {
+	st := newWebTestStore(t)
+	cfg := web.Config{
+		Addr:          "127.0.0.1:8080",
+		AdminPassword: "",
+		Store:         st,
+	}
+	srv, err := web.NewServer(cfg)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	jar, _ := cookiejar.New(nil)
+	client := &http.Client{Jar: jar}
+
+	for i := 0; i < 5; i++ {
+		resp, err := client.Get(ts.URL + "/")
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+	}
+
+	activeCount := srv.ActiveSessionCount()
+	if activeCount != 1 {
+		t.Errorf("expected 1 session reused across requests, got %d", activeCount)
+	}
+}
+
+// 13. Gestão inputs: empty field keeps stored value, comma separator accepted, invalid number gives error.
+func TestManage_KeepCurrentOnEmptyAndCommaNumbers(t *testing.T) {
+	st := newWebTestStore(t)
+	_, d1, _ := seedPlantWithDevices(t, st, "P_MANAGE", "Usina Gestão")
+	ctx := context.Background()
+
+	initCap := 15.0
+	initArea := 42.0
+	initEff := 0.18
+	_ = st.UpdateDevice(ctx, d1.ID, &initCap, &initArea, &initEff)
+
+	cfg := web.Config{
+		Addr:          "127.0.0.1:8080",
+		AdminPassword: "",
+		Store:         st,
+	}
+	srv, _ := web.NewServer(cfg)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	jar, _ := cookiejar.New(nil)
+	client := &http.Client{
+		Jar: jar,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse // capture redirects
+		},
+	}
+
+	// First GET to establish session and get CSRF token
+	respGet, err := client.Get(ts.URL + "/manage")
+	if err != nil {
+		t.Fatal(err)
+	}
+	respGet.Body.Close()
+
+	csrfToken := srv.TestCSRFToken()
+
+	// 1. POST with empty area must keep stored area (42.0)
+	formEmpty := url.Values{
+		"csrf_token":    {csrfToken},
+		"capacity_kw":   {"15.0"},
+		"panel_area_m2": {""}, // empty keeps current
+		"efficiency":    {"0.18"},
+	}
+	reqEmpty, _ := http.NewRequest("POST", fmt.Sprintf("%s/manage/devices/%d", ts.URL, d1.ID), strings.NewReader(formEmpty.Encode()))
+	reqEmpty.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	reqEmpty.Header.Set("Origin", ts.URL)
+	respEmpty, err := client.Do(reqEmpty)
+	if err != nil {
+		t.Fatal(err)
+	}
+	respEmpty.Body.Close()
+
+	devAfterEmpty, _ := st.GetDevice(ctx, d1.ID)
+	if devAfterEmpty.PanelAreaM2 == nil || *devAfterEmpty.PanelAreaM2 != 42.0 {
+		t.Errorf("expected area to remain 42.0 after empty post, got %v", devAfterEmpty.PanelAreaM2)
+	}
+
+	// 2. POST with comma decimal separator (45,5) must update area to 45.5
+	formComma := url.Values{
+		"csrf_token":    {csrfToken},
+		"capacity_kw":   {"15.0"},
+		"panel_area_m2": {"45,5"},
+		"efficiency":    {"0.18"},
+	}
+	reqComma, _ := http.NewRequest("POST", fmt.Sprintf("%s/manage/devices/%d", ts.URL, d1.ID), strings.NewReader(formComma.Encode()))
+	reqComma.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	reqComma.Header.Set("Origin", ts.URL)
+	respComma, err := client.Do(reqComma)
+	if err != nil {
+		t.Fatal(err)
+	}
+	respComma.Body.Close()
+
+	devAfterComma, _ := st.GetDevice(ctx, d1.ID)
+	if devAfterComma.PanelAreaM2 == nil || *devAfterComma.PanelAreaM2 != 45.5 {
+		t.Errorf("expected area to update to 45.5, got %v", devAfterComma.PanelAreaM2)
+	}
+
+	// 3. POST with invalid number must redirect with error message
+	formBad := url.Values{
+		"csrf_token":    {csrfToken},
+		"capacity_kw":   {"15.0"},
+		"panel_area_m2": {"invalido"},
+		"efficiency":    {"0.18"},
+	}
+	reqBad, _ := http.NewRequest("POST", fmt.Sprintf("%s/manage/devices/%d", ts.URL, d1.ID), strings.NewReader(formBad.Encode()))
+	reqBad.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	reqBad.Header.Set("Origin", ts.URL)
+	respBad, err := client.Do(reqBad)
+	if err != nil {
+		t.Fatal(err)
+	}
+	respBad.Body.Close()
+
+	loc := respBad.Header.Get("Location")
+	if !strings.Contains(loc, "error=") {
+		t.Errorf("expected redirect location to contain error, got %q", loc)
+	}
+}
+
+// 14. Alert detail: detected_on from evidence_json formatted as DD/MM/AAAA, and no raw codes.
+func TestAlerts_DetectedOnFormatting(t *testing.T) {
+	st := newWebTestStore(t)
+	p, d1, _ := seedPlantWithDevices(t, st, "P_ALERT", "Usina Alerta")
+	ctx := context.Background()
+
+	alert := store.Alert{
+		PlantID:      p.ID,
+		DeviceID:     &d1.ID,
+		Rule:         "stuck_value",
+		Severity:     "critical",
+		Status:       "open",
+		DedupeKey:    "P_ALERT:D1:stuck",
+		Title:        "Leitura travada em D1",
+		FirstDate:    "2026-03-10",
+		LastDate:     "2026-03-12",
+		EvidenceJSON: `{"detected_on":"2026-03-12","num_days":3,"values":[{"date":"2026-03-10","value":10,"reason":"stuck_value"},{"date":"2026-03-11","value":10,"reason":"stuck_value"},{"date":"2026-03-12","value":10,"reason":"stuck_value"}]}`,
+	}
+	_ = st.SaveAlert(ctx, &alert)
+
+	cfg := web.Config{
+		Addr:          "127.0.0.1:8080",
+		AdminPassword: "",
+		Store:         st,
+	}
+	srv, _ := web.NewServer(cfg)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	client := ts.Client()
+
+	// 1. List page must show 12/03/2026 in "Detectado em"
+	respList, err := client.Get(ts.URL + "/alerts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawList, _ := io.ReadAll(respList.Body)
+	respList.Body.Close()
+	bodyList := string(rawList)
+
+	if !strings.Contains(bodyList, "12/03/2026") {
+		t.Errorf("expected alerts list to display '12/03/2026' for detected_on")
+	}
+
+	// 2. Detail page must show "Detectado em: 12/03/2026", Motivo header, and friendly rule label
+	respDetail, err := client.Get(fmt.Sprintf("%s/alerts/%d", ts.URL, alert.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawDetail, _ := io.ReadAll(respDetail.Body)
+	respDetail.Body.Close()
+	bodyDetail := string(rawDetail)
+
+	if !strings.Contains(bodyDetail, "Detectado em: 12/03/2026") {
+		t.Errorf("expected alert detail to show 'Detectado em: 12/03/2026'")
+	}
+	if !strings.Contains(bodyDetail, "<th>Motivo</th>") {
+		t.Errorf("expected table header 'Motivo' instead of 'Motivo / Diagnóstico'")
+	}
+	if !strings.Contains(bodyDetail, "Leitura travada") {
+		t.Errorf("expected friendly rule label 'Leitura travada'")
+	}
+	if !strings.Contains(bodyDetail, "leitura travada") {
+		t.Errorf("expected friendly reason label 'leitura travada'")
+	}
+}
+
+// 15. Overview status badge priorities: Sem comunicação > Crítico > Atenção > Sem dados recentes > OK.
+func TestOverview_StatusBadgePriorities(t *testing.T) {
+	st := newWebTestStore(t)
+	ctx := context.Background()
+
+	// Plant 1: device offline -> "Sem comunicação"
+	p1, d1, _ := seedPlantWithDevices(t, st, "P_OFFLINE", "Usina Offline")
+	onlineFalse := false
+	now := time.Now()
+	_, _ = st.UpsertDevice(ctx, domain.Device{
+		ID:         d1.ID,
+		PlantID:    p1.ID,
+		ExternalID: d1.ExternalID,
+		Name:       d1.Name,
+		Kind:       d1.Kind,
+		Online:     &onlineFalse,
+		LastSeenAt: &now,
+	})
+
+	// Plant 2: critical alert -> "Crítico"
+	p2, d2, _ := seedPlantWithDevices(t, st, "P_CRIT", "Usina Critica")
+	_ = st.SaveAlert(ctx, &store.Alert{
+		PlantID:   p2.ID,
+		DeviceID:  &d2.ID,
+		Rule:      "zero_generation",
+		Severity:  "critical",
+		Status:    "open",
+		DedupeKey: "crit",
+		Title:     "Zero",
+		FirstDate: "2026-05-01",
+		LastDate:  "2026-05-01",
+	})
+
+	// Plant 3: warning alert -> "Atenção"
+	p3, d3, _ := seedPlantWithDevices(t, st, "P_WARN", "Usina Aviso")
+	_ = st.SaveAlert(ctx, &store.Alert{
+		PlantID:   p3.ID,
+		DeviceID:  &d3.ID,
+		Rule:      "under_expected",
+		Severity:  "warning",
+		Status:    "open",
+		DedupeKey: "warn",
+		Title:     "Abaixo",
+		FirstDate: "2026-05-01",
+		LastDate:  "2026-05-01",
+	})
+
+	// Plant 4: OK reading yesterday -> "OK"
+	p4, d4, _ := seedPlantWithDevices(t, st, "P_OK", "Usina OK")
+	mockNow := time.Date(2026, 5, 2, 12, 0, 0, 0, time.UTC)
+	yStart, yEnd, _ := domain.LocalDay("2026-05-01", p4.Timezone)
+	vOK := 25.0
+	_, _ = st.InsertReadings(ctx, []domain.Reading{
+		{
+			DeviceID:    d4.ID,
+			Metric:      domain.MetricEnergyKWh,
+			PeriodStart: yStart,
+			PeriodEnd:   yEnd,
+			Value:       &vOK,
+			Quality:     domain.QualityOK,
+		},
+	})
+
+	cfg := web.Config{
+		Addr:          "127.0.0.1:8080",
+		AdminPassword: "",
+		Store:         st,
+		Now:           func() time.Time { return mockNow },
+	}
+	srv, _ := web.NewServer(cfg)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	resp, err := ts.Client().Get(ts.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	rawBody, _ := io.ReadAll(resp.Body)
+	body := string(rawBody)
+
+	if !strings.Contains(body, "Sem comunicação") {
+		t.Errorf("expected overview to show badge 'Sem comunicação'")
+	}
+	if !strings.Contains(body, "Crítico") {
+		t.Errorf("expected overview to show badge 'Crítico'")
+	}
+	if !strings.Contains(body, "Atenção") {
+		t.Errorf("expected overview to show badge 'Atenção'")
+	}
+	if !strings.Contains(body, "OK") {
+		t.Errorf("expected overview to show badge 'OK'")
+	}
+}
+
+type authHeaderTransport struct {
+	token string
+	base  http.RoundTripper
+}
+
+func (a *authHeaderTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	r2 := req.Clone(req.Context())
+	if a.token != "" {
+		r2.Header.Set("Authorization", "Bearer "+a.token)
+	}
+	return a.base.RoundTrip(r2)
+}
+
+// 16. MCP mount in serve: 404 when unset, 401 when wrong/no token, 200 with real SDK client.
+func TestMCP_MountInServe(t *testing.T) {
+	st := newWebTestStore(t)
+	ctx := context.Background()
+	plant, _, _ := seedPlantWithDevices(t, st, "P_MCP", "Usina MCP")
+
+	// 1. When SOLARGUARD_MCP_TOKEN is unset: /mcp returns 404
+	srvUnset, err := web.NewServer(web.Config{
+		Addr:          "127.0.0.1:8080",
+		AdminPassword: "",
+		MCPToken:      "",
+		Store:         st,
+	})
+	if err != nil {
+		t.Fatalf("new server unset: %v", err)
+	}
+	tsUnset := httptest.NewServer(srvUnset.Handler())
+	defer tsUnset.Close()
+
+	resp404, err := http.Get(tsUnset.URL + "/mcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp404.Body.Close()
+	if resp404.StatusCode != http.StatusNotFound {
+		t.Errorf("expected 404 when MCPToken is unset, got %d", resp404.StatusCode)
+	}
+
+	// 2. When SOLARGUARD_MCP_TOKEN is set:
+	secretToken := "secret-mcp-bearer-token-123"
+	srvSet, err := web.NewServer(web.Config{
+		Addr:          "127.0.0.1:8080",
+		AdminPassword: "",
+		MCPToken:      secretToken,
+		Store:         st,
+	})
+	if err != nil {
+		t.Fatalf("new server with mcp token: %v", err)
+	}
+	tsSet := httptest.NewServer(srvSet.Handler())
+	defer tsSet.Close()
+
+	// 2a. Request without token -> 401
+	reqNoToken, _ := http.NewRequest("POST", tsSet.URL+"/mcp", strings.NewReader(`{}`))
+	reqNoToken.Header.Set("Content-Type", "application/json")
+	respNoToken, err := http.DefaultClient.Do(reqNoToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	respNoToken.Body.Close()
+	if respNoToken.StatusCode != http.StatusUnauthorized {
+		t.Errorf("expected 401 without token, got %d", respNoToken.StatusCode)
+	}
+
+	// 2b. Request with wrong token -> 401
+	reqWrongToken, _ := http.NewRequest("POST", tsSet.URL+"/mcp", strings.NewReader(`{}`))
+	reqWrongToken.Header.Set("Content-Type", "application/json")
+	reqWrongToken.Header.Set("Authorization", "Bearer wrong-token")
+	respWrongToken, err := http.DefaultClient.Do(reqWrongToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	respWrongToken.Body.Close()
+	if respWrongToken.StatusCode != http.StatusUnauthorized {
+		t.Errorf("expected 401 with wrong token, got %d", respWrongToken.StatusCode)
+	}
+
+	// 2c. Connect with real SDK MCP client
+	httpClient := &http.Client{
+		Transport: &authHeaderTransport{
+			token: secretToken,
+			base:  http.DefaultTransport,
+		},
+	}
+	transport := &mcp.StreamableClientTransport{
+		Endpoint:             tsSet.URL + "/mcp",
+		HTTPClient:           httpClient,
+		DisableStandaloneSSE: true,
+	}
+	mcpClient := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "1.0"}, nil)
+	session, err := mcpClient.Connect(ctx, transport, nil)
+	if err != nil {
+		t.Fatalf("connect real MCP client: %v", err)
+	}
+	defer session.Close()
+
+	// Call list tools
+	toolsList, err := session.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatalf("list tools via real MCP client: %v", err)
+	}
+	if len(toolsList.Tools) == 0 {
+		t.Errorf("expected tools to be registered on MCP server")
+	}
+
+	// Call tool get_generation
+	toolRes, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "get_generation",
+		Arguments: map[string]any{
+			"plant_id": plant.ID,
+			"from":     "2026-05-01",
+			"to":       "2026-05-05",
+		},
+	})
+	if err != nil {
+		t.Fatalf("call get_generation tool: %v", err)
+	}
+	if toolRes.IsError {
+		t.Errorf("tool returned error: %v", toolRes.Content)
 	}
 }

@@ -68,11 +68,11 @@
               <div style="display:inline-flex;gap:4px;flex-wrap:wrap;">
                 {{range .Steps}}
                   {{if eq .Status "ok"}}
-                    <span class="badge badge-success" title="{{.Name}}: {{.DurationMS}}ms">{{.Name}}</span>
+                    <span class="badge badge-success" title="{{labelsPipelineStep .Name}}: {{.DurationMS}}ms">{{labelsPipelineStep .Name}}</span>
                   {{else if eq .Status "skipped"}}
-                    <span class="badge badge-neutral" title="{{.Name}}: ignorado">{{.Name}}</span>
+                    <span class="badge badge-neutral" title="{{labelsPipelineStep .Name}}: ignorado">{{labelsPipelineStep .Name}}</span>
                   {{else}}
-                    <span class="badge badge-critical" title="{{.Name}}: {{.Error}}">{{.Name}}</span>
+                    <span class="badge badge-critical" title="{{labelsPipelineStep .Name}}: {{.Error}}">{{labelsPipelineStep .Name}}</span>
                   {{end}}
                 {{end}}
               </div>
@@ -109,9 +109,17 @@
         <tr>
           <td style="font-weight:600;">{{.Source.Name}}</td>
           <td><code>{{.Source.Kind}}</code></td>
-          <td><code>{{.Source.CredentialEnv}}</code></td>
           <td>
-            {{if .IsEnvConfigured}}
+            {{if or (eq .Source.Kind "file") (eq .Source.Kind "planilha") (eq .Source.CredentialEnv "")}}
+              <span style="color:var(--text-muted);">-</span>
+            {{else}}
+              <code>{{.Source.CredentialEnv}}</code>
+            {{end}}
+          </td>
+          <td>
+            {{if or (eq .Source.Kind "file") (eq .Source.Kind "planilha") (eq .Source.CredentialEnv "")}}
+              <span class="badge badge-neutral">Não se aplica</span>
+            {{else if .IsEnvConfigured}}
               <span class="badge badge-success">Configurada</span>
             {{else}}
               <span class="badge badge-critical">Não configurada</span>
@@ -158,10 +166,10 @@
               <input type="text" name="timezone" class="form-control" value="{{.Timezone}}" style="width:180px;" required>
             </td>
             <td>
-              <input type="number" step="0.0001" name="latitude" class="form-control" value="{{if .Latitude}}{{formatFloat (derefFloat .Latitude) 4}}{{end}}" style="width:120px;" placeholder="-23.5">
+              <input type="text" inputmode="decimal" name="latitude" class="form-control" value="{{if .Latitude}}{{printFloat (derefFloat .Latitude)}}{{end}}" style="width:120px;" placeholder="-23.5">
             </td>
             <td>
-              <input type="number" step="0.0001" name="longitude" class="form-control" value="{{if .Longitude}}{{formatFloat (derefFloat .Longitude) 4}}{{end}}" style="width:120px;" placeholder="-46.6">
+              <input type="text" inputmode="decimal" name="longitude" class="form-control" value="{{if .Longitude}}{{printFloat (derefFloat .Longitude)}}{{end}}" style="width:120px;" placeholder="-46.6">
             </td>
             <td>
               <button type="submit" class="btn btn-secondary btn-sm">Salvar</button>
@@ -197,13 +205,13 @@
             <td>{{.PlantName}}</td>
             <td style="font-weight:600;">{{.Device.Name}}</td>
             <td>
-              <input type="number" step="0.1" name="capacity_kw" class="form-control" value="{{if .Device.CapacityKW}}{{formatFloat (derefFloat .Device.CapacityKW) 1}}{{end}}" style="width:110px;" placeholder="ex: 15.0">
+              <input type="text" inputmode="decimal" name="capacity_kw" class="form-control" value="{{if .Device.CapacityKW}}{{printFloat (derefFloat .Device.CapacityKW)}}{{end}}" style="width:110px;" placeholder="ex: 15.0">
             </td>
             <td>
-              <input type="number" step="0.1" name="panel_area_m2" class="form-control" value="{{if .Device.PanelAreaM2}}{{formatFloat (derefFloat .Device.PanelAreaM2) 1}}{{end}}" style="width:110px;" placeholder="ex: 42.0">
+              <input type="text" inputmode="decimal" name="panel_area_m2" class="form-control" value="{{if .Device.PanelAreaM2}}{{printFloat (derefFloat .Device.PanelAreaM2)}}{{end}}" style="width:110px;" placeholder="ex: 42.0">
             </td>
             <td>
-              <input type="number" step="0.01" name="efficiency" class="form-control" value="{{if .Device.Efficiency}}{{formatFloat (derefFloat .Device.Efficiency) 2}}{{end}}" style="width:100px;" placeholder="ex: 0.18">
+              <input type="text" inputmode="decimal" name="efficiency" class="form-control" value="{{if .Device.Efficiency}}{{printFloat (derefFloat .Device.Efficiency)}}{{end}}" style="width:100px;" placeholder="ex: 0.18">
             </td>
             <td>
               <button type="submit" class="btn btn-secondary btn-sm">Salvar</button>
@@ -240,7 +248,7 @@
             <input type="hidden" name="rule" value="{{.Rule}}">
             <input type="hidden" name="plant_id" value="{{.PlantID}}">
 
-            <td style="font-weight:600;"><code>{{.Rule}}</code></td>
+            <td style="font-weight:600;">{{labelsRule .Rule}}</td>
             <td>{{.PlantName}}</td>
             <td>
               <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;">

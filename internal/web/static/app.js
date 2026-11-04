@@ -123,11 +123,27 @@ function renderPlot(container, data) {
         scale: "x",
         stroke: textColor,
         grid: { stroke: gridColor, width: 1 },
-        values: [
-          [3600 * 24 * 365, "{YYYY}", 7, "{YYYY}"],
-          [3600 * 24 * 28, "{DD}/{MM}", 7, "{DD}/{MM}"],
-          [3600 * 24, "{DD}/{MM}", 7, "{DD}/{MM}"],
-        ],
+        space: 70,
+        gap: 8,
+        splits: (u, axisIdx, min, max) => {
+          const width = u.bbox.width || 800;
+          const space = 70;
+          const maxLabels = Math.max(2, Math.floor(width / space));
+          const inRange = xVals.filter((v) => v >= min && v <= max);
+          if (inRange.length <= maxLabels) return inRange;
+          const step = Math.ceil(inRange.length / maxLabels);
+          const s = [];
+          for (let i = 0; i < inRange.length; i += step) {
+            s.push(inRange[i]);
+          }
+          return s;
+        },
+        values: (u, splits) => splits.map((ts) => {
+          const d = new Date(ts * 1000);
+          const day = String(d.getUTCDate()).padStart(2, "0");
+          const month = String(d.getUTCMonth() + 1).padStart(2, "0");
+          return `${day}/${month}`;
+        }),
       },
       {
         scale: "y",
@@ -143,12 +159,14 @@ function renderPlot(container, data) {
         stroke: "#2563eb",
         width: 2,
         points: { show: true, size: 5 },
+        spanGaps: false,
       },
       {
         label: "Esperado (kWh)",
         stroke: "#16a34a",
         width: 2,
         dash: [4, 4],
+        spanGaps: false,
       },
       {
         label: "Banda Inf (90%)",
@@ -168,6 +186,7 @@ function renderPlot(container, data) {
         width: 2,
         dash: [6, 3],
         points: { show: true, size: 4 },
+        spanGaps: false,
       },
     ],
   };

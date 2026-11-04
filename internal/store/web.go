@@ -150,6 +150,35 @@ func (s *Store) GetPlantFirstReadingDate(ctx context.Context, plantID int64) (st
 	return t.In(loc).Format(time.DateOnly), nil
 }
 
+// GetPlantNewestReadingDate returns the latest local date of readings for a plant, or "" if none.
+func (s *Store) GetPlantNewestReadingDate(ctx context.Context, plantID int64) (string, error) {
+	plant, err := s.GetPlant(ctx, plantID)
+	if err != nil {
+		return "", err
+	}
+	loc, err := time.LoadLocation(plant.Timezone)
+	if err != nil {
+		return "", fmt.Errorf("load plant timezone: %w", err)
+	}
+
+	var maxStart sql.NullString
+	err = s.db.QueryRowContext(ctx, `SELECT MAX(r.period_start)
+		FROM readings r
+		JOIN devices d ON r.device_id = d.id
+		WHERE d.plant_id = ?`, plantID).Scan(&maxStart)
+	if errors.Is(err, sql.ErrNoRows) || !maxStart.Valid {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("get plant newest reading date: %w", err)
+	}
+	t, err := parseTime(maxStart.String)
+	if err != nil {
+		return "", err
+	}
+	return t.In(loc).Format(time.DateOnly), nil
+}
+
 // GetDevice returns a device by its ID or ErrNotFound.
 func (s *Store) GetDevice(ctx context.Context, id int64) (domain.Device, error) {
 	var d domain.Device
@@ -178,12 +207,12 @@ func (s *Store) GetDevice(ctx context.Context, id int64) (domain.Device, error) 
 	return d, nil
 }
 
-// UpdateDevice updates the rating/area specifications of a device.
+// UpdateDevice updates the rating/area specifications of a device, keeping existing values for nil arguments.
 func (s *Store) UpdateDevice(ctx context.Context, id int64, capacityKW, panelAreaM2, efficiency *float64) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE devices SET
-		capacity_kw = ?,
-		panel_area_m2 = ?,
-		efficiency = ?
+		capacity_kw = COALESCE(?, capacity_kw),
+		panel_area_m2 = COALESCE(?, panel_area_m2),
+		efficiency = COALESCE(?, efficiency)
 		WHERE id = ?`, capacityKW, panelAreaM2, efficiency, id)
 	if err != nil {
 		return fmt.Errorf("update device %d: %w", id, err)
@@ -198,12 +227,12 @@ func (s *Store) UpdateDevice(ctx context.Context, id int64, capacityKW, panelAre
 	return nil
 }
 
-// UpdatePlantDetails updates editable plant settings: timezone and coordinates.
+// UpdatePlantDetails updates editable plant settings: timezone and coordinates, keeping existing values for nil/empty arguments.
 func (s *Store) UpdatePlantDetails(ctx context.Context, id int64, timezone string, lat, lon *float64) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE plants SET
-		timezone = ?,
-		latitude = ?,
-		longitude = ?
+		timezone = COALESCE(NULLIF(?, ''), timezone),
+		latitude = COALESCE(?, latitude),
+		longitude = COALESCE(?, longitude)
 		WHERE id = ?`, timezone, lat, lon, id)
 	if err != nil {
 		return fmt.Errorf("update plant details %d: %w", id, err)
@@ -264,12 +293,14 @@ func (s *Store) GetPlantDeviceSummaries(ctx context.Context, plantID int64) ([]D
 
 // PlantYesterdayStats holds yesterday's generation and expectation for a plant.
 type PlantYesterdayStats struct {
-	YesterdayDate string
-	MeasuredKWh   float64
-	ExpectedKWh   float64
-	HasReadings   bool
-	HasExpected   bool
-	LastReadingAt *time.Time
+	YesterdayDate    string
+	MeasuredKWh      float64
+	ExpectedKWh      float64
+	HasReadings      bool
+	HasExpected      bool
+	LastMeasuredDate string // local date DD/MM/AAAA, no time
+	HasOfflineDevice bool
+	HasStaleData     bool
 }
 
 // GetPlantYesterdayStats computes generation and expected values for local yesterday.
@@ -288,13 +319,13 @@ func (s *Store) GetPlantYesterdayStats(ctx context.Context, p domain.Plant, now 
 	var stats PlantYesterdayStats
 	stats.YesterdayDate = yesterdayStr
 
-	// Sum measured kWh for local yesterday across all devices
+	// Sum measured kWh for local yesterday across all devices (only on ok days)
 	var sumMeasured sql.NullFloat64
 	var countMeasured int
 	err = s.db.QueryRowContext(ctx, `SELECT SUM(r.value), COUNT(r.value)
 		FROM readings r
 		JOIN devices d ON r.device_id = d.id
-		WHERE d.plant_id = ? AND r.metric = 'energy_kwh'
+		WHERE d.plant_id = ? AND r.metric = 'energy_kwh' AND r.quality = 'ok'
 		  AND r.period_start >= ? AND r.period_end <= ?`,
 		p.ID, formatTime(yStart), formatTime(yEnd)).Scan(&sumMeasured, &countMeasured)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -321,17 +352,28 @@ func (s *Store) GetPlantYesterdayStats(ctx context.Context, p domain.Plant, now 
 		stats.HasExpected = true
 	}
 
-	// Last reading timestamp
-	var maxEnd sql.NullString
-	err = s.db.QueryRowContext(ctx, `SELECT MAX(r.period_end)
+	// Local date of last measured reading (no time!)
+	var maxStart sql.NullString
+	err = s.db.QueryRowContext(ctx, `SELECT MAX(r.period_start)
 		FROM readings r
 		JOIN devices d ON r.device_id = d.id
-		WHERE d.plant_id = ?`, p.ID).Scan(&maxEnd)
-	if err == nil && maxEnd.Valid {
-		if t, err := parseTime(maxEnd.String); err == nil {
-			stats.LastReadingAt = &t
+		WHERE d.plant_id = ? AND r.metric = 'energy_kwh' AND r.value IS NOT NULL`, p.ID).Scan(&maxStart)
+	if err == nil && maxStart.Valid {
+		if t, err := parseTime(maxStart.String); err == nil {
+			stats.LastMeasuredDate = t.In(loc).Format("02/01/2006")
+			// If last measured reading is more than 3 days old, consider stale
+			if now.In(loc).Sub(t.In(loc)) > 72*time.Hour {
+				stats.HasStaleData = true
+			}
 		}
+	} else {
+		stats.HasStaleData = true
 	}
+
+	// Check if any device is offline
+	var offlineCount int
+	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM devices WHERE plant_id = ? AND online = 0`, p.ID).Scan(&offlineCount)
+	stats.HasOfflineDevice = offlineCount > 0
 
 	return stats, nil
 }

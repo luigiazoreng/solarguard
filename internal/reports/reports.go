@@ -12,6 +12,7 @@ import (
 
 	"github.com/luigiazoreng/solarguard/internal/analytics"
 	"github.com/luigiazoreng/solarguard/internal/domain"
+	"github.com/luigiazoreng/solarguard/internal/labels"
 	"github.com/luigiazoreng/solarguard/internal/store"
 )
 
@@ -400,82 +401,36 @@ func renderMarkdown(sb *strings.Builder, escapedPlantName string, plant domain.P
 	}
 }
 
-var ruleLabels = map[string]string{
-	"stuck_value":         "Leitura travada",
-	"zero_generation":     "Geração zerada",
-	"implausible_reading": "Leitura implausível",
-	"plant_no_generation": "Usina sem geração",
-	"missing_data":        "Dados ausentes",
-	"peer_divergence":     "Divergência entre dispositivos",
-	"under_expected":      "Abaixo do esperado",
-	"gradual_loss":        "Perda gradual",
-	"stale_data":          "Sem dados recentes",
-	"device_offline":      "Sem comunicação",
-}
-
 func friendlyRuleLabel(code string) string {
-	if label, ok := ruleLabels[code]; ok {
-		return label
+	lbl := labels.Rule(code)
+	if lbl == code {
+		return escapeMD(code)
 	}
-	return escapeMD(code)
-}
-
-var reasonLabels = map[string]string{
-	"stuck_value":                "leitura travada",
-	"leitura_travada":            "leitura travada",
-	"zero_sequence":              "sequência de zeros",
-	"zero_run":                   "sequência de zeros",
-	"zero_with_peers":            "zero com pares gerando",
-	"zero_with_peers_generating": "zero com pares gerando",
-	"zero_without_evidence":      "zero sem evidência",
-	"zero_no_peer_evidence":      "zero sem evidência",
-	"implausible_value":          "valor implausível",
-	"implausible_high":           "valor implausível",
-	"implausible_negative":       "negativo",
-	"missing_value":              "valor ausente",
-	"negative":                   "negativo",
-	"missing_data":               "dados ausentes",
-	"dados_ausentes":             "dados ausentes",
-	"zero_generation":            "geração zerada",
+	return lbl
 }
 
 func friendlyReasonLabel(code string) string {
-	if label, ok := reasonLabels[code]; ok {
-		return label
+	lbl := labels.Reason(code)
+	if lbl == code {
+		return escapeMD(code)
 	}
-	return escapeMD(code)
-}
-
-var severityLabels = map[string]string{
-	"warning":     "aviso",
-	"critical":    "crítico",
-	"info":        "informativo",
-	"aviso":       "aviso",
-	"crítico":     "crítico",
-	"informativo": "informativo",
+	return lbl
 }
 
 func friendlySeverityLabel(code string) string {
-	if label, ok := severityLabels[code]; ok {
-		return label
+	lbl := labels.Severity(code)
+	if lbl == code {
+		return escapeMD(code)
 	}
-	return escapeMD(code)
-}
-
-var statusLabels = map[string]string{
-	"open":         "aberto",
-	"acknowledged": "reconhecido",
-	"resolved":     "resolvido",
-	"aberto":       "aberto",
-	"reconhecido":  "reconhecido",
-	"resolvido":    "resolvido",
+	return lbl
 }
 
 func friendlyStatusLabel(code string) string {
-	if label, ok := statusLabels[code]; ok {
-		return label
+	lbl := labels.Status(code)
+	if lbl == code {
+		return escapeMD(code)
 	}
-	return escapeMD(code)
+	return lbl
 }
 
 func formatDatePtBR(iso string) string {

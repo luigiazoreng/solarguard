@@ -46,6 +46,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	var rows []PlantOverviewRow
 	var totalMeasured, totalExpected float64
 	var totalDevices, totalCrit, totalWarn, totalInfo int
+	var plantsWithReadingsCount int
 
 	for _, p := range plants {
 		devs, _ := s.store.ListDevices(ctx, p.ID)
@@ -62,6 +63,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 
 		if stats.HasReadings {
 			totalMeasured += stats.MeasuredKWh
+			plantsWithReadingsCount++
 		}
 		if stats.HasExpected {
 			totalExpected += stats.ExpectedKWh
@@ -69,6 +71,16 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 
 		pAlerts := alertsByPlant[p.ID]
 		var critCount, warnCount, infoCount int
+		hasOfflineDevice := false
+		hasStaleAlert := false
+
+		for _, d := range devs {
+			if d.Kind != "plant" && d.Online != nil && !*d.Online {
+				hasOfflineDevice = true
+				break
+			}
+		}
+
 		for _, a := range pAlerts {
 			switch a.Severity {
 			case "critical":
@@ -81,22 +93,33 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 				infoCount++
 				totalInfo++
 			}
+			if a.Rule == "device_offline" {
+				hasOfflineDevice = true
+			}
+			if a.Rule == "stale_data" {
+				hasStaleAlert = true
+			}
 		}
 
-		badge := "Normal"
-		score := 0
-		if critCount > 0 {
+		// Priority order: "Sem comunicação" -> "Crítico" -> "Atenção" -> "Sem dados recentes" -> "OK"
+		var badge string
+		var score int
+
+		if hasOfflineDevice {
+			badge = "Sem comunicação"
+			score = 2000
+		} else if critCount > 0 {
 			badge = "Crítico"
 			score = 1000 + critCount*10
-		} else if warnCount > 0 {
+		} else if warnCount > 0 || (hasDev && devPct <= -15.0) {
 			badge = "Atenção"
 			score = 500 + warnCount*5
-		} else if hasDev && devPct <= -15.0 {
-			badge = "Atenção"
-			score = 200 - int(devPct)
-		} else if !stats.HasReadings {
-			badge = "Sem dados"
-			score = 10
+		} else if stats.HasStaleData || hasStaleAlert || !stats.HasReadings {
+			badge = "Sem dados recentes"
+			score = 100
+		} else {
+			badge = "OK"
+			score = 0
 		}
 
 		rows = append(rows, PlantOverviewRow{
@@ -113,7 +136,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	// Sort: problems first (highest severity score), then alphabetical
+	// Sort: highest severity score first, then alphabetical by name
 	sort.Slice(rows, func(i, j int) bool {
 		if rows[i].SeverityScore != rows[j].SeverityScore {
 			return rows[i].SeverityScore > rows[j].SeverityScore
@@ -121,9 +144,10 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		return rows[i].Plant.Name < rows[j].Plant.Name
 	})
 
+	hasAnyYesterdayReadings := plantsWithReadingsCount > 0
 	var totalDevPct float64
 	hasTotalDev := false
-	if totalExpected > 0 && totalMeasured > 0 {
+	if totalExpected > 0 && totalMeasured > 0 && hasAnyYesterdayReadings {
 		totalDevPct = ((totalMeasured - totalExpected) / totalExpected) * 100.0
 		hasTotalDev = true
 	}
@@ -132,6 +156,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	data["Plants"] = rows
 	data["TotalPlants"] = len(plants)
 	data["TotalDevices"] = totalDevices
+	data["HasAnyYesterdayReadings"] = hasAnyYesterdayReadings
 	data["TotalYesterdayMeasured"] = totalMeasured
 	data["TotalYesterdayExpected"] = totalExpected
 	data["TotalDeviationPct"] = totalDevPct

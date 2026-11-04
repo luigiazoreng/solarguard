@@ -35,6 +35,7 @@ func runServe(ctx context.Context, args []string) error {
 	}
 
 	adminPassword := os.Getenv("SOLARGUARD_ADMIN_PASSWORD")
+	mcpToken := os.Getenv("SOLARGUARD_MCP_TOKEN")
 
 	st, err := store.Open(ctx, dbPath())
 	if err != nil {
@@ -47,6 +48,7 @@ func runServe(ctx context.Context, args []string) error {
 	cfg := web.Config{
 		Addr:          *addr,
 		AdminPassword: adminPassword,
+		MCPToken:      mcpToken,
 		Store:         st,
 		Logger:        logger,
 	}

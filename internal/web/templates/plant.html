@@ -45,22 +45,27 @@
   <div class="card">
     <div class="card-title">Energia Medida</div>
     <div class="card-value">{{formatFloat .PeriodMeasured 1}} <span style="font-size:0.9rem;font-weight:normal;">kWh</span></div>
-    <div class="card-sub">{{.PeriodLabel}}</div>
+    <div class="card-sub">{{.PeriodLabel}}{{if .DataUntilStr}} • <span class="badge badge-neutral" style="font-size:0.75rem;">Dados até {{.DataUntilStr}}</span>{{end}}</div>
   </div>
   <div class="card">
-    <div class="card-title">Energia Esperada</div>
-    <div class="card-value">{{formatFloat .PeriodExpected 1}} <span style="font-size:0.9rem;font-weight:normal;">kWh</span></div>
-    <div class="card-sub">Modelo: {{.ActiveModelName}}</div>
+    <div class="card-title">Medida x esperada</div>
+    {{if .HasPaired}}
+      <div class="card-value">{{formatFloat .PairedMeasured 1}} / {{formatFloat .PairedExpected 1}} <span style="font-size:0.9rem;font-weight:normal;">kWh</span></div>
+      <div class="card-sub"><span style="{{if lt .PairedDeviation 0.0}}color:var(--danger);{{else if gt .PairedDeviation 0.0}}color:var(--success);{{end}} font-weight:600;">{{if gt .PairedDeviation 0.0}}+{{end}}{{formatPercent .PairedDeviation}}</span> • {{.PairedDeviceDays}} {{if eq .PairedDeviceDays 1}}dia-dispositivo{{else}}dias-dispositivo{{end}}</div>
+    {{else}}
+      <div class="card-value" style="font-size:1.05rem;color:var(--text-muted);font-weight:500;">sem comparação disponível</div>
+      <div class="card-sub">sem comparação disponível</div>
+    {{end}}
   </div>
   <div class="card">
-    <div class="card-title">Energia Estimada Perdida</div>
+    <div class="card-title">Energia esperada sem medição válida</div>
     <div class="card-value" style="color:var(--warning);">{{formatFloat .PeriodLostEnergy 1}} <span style="font-size:0.9rem;font-weight:normal;">kWh</span></div>
-    <div class="card-sub">Estimativa (dias com falha/sem medição ok)</div>
+    <div class="card-sub">Estimativa: pode ter sido gerada e não registrada.</div>
   </div>
   <div class="card">
     <div class="card-title">Qualidade dos Dados</div>
     <div class="card-value">{{formatPercent .PeriodQualityPct}}</div>
-    <div class="card-sub">{{.PeriodOKReadings}} de {{.PeriodTotalReadings}} leituras válidas</div>
+    <div class="card-sub">{{.PeriodOKReadings}} de {{.PeriodTotalReadings}} {{if eq .TotalDevices 1}}dias válidos{{else}}dias-dispositivo válidos{{end}}</div>
   </div>
 </div>
 
@@ -113,7 +118,7 @@
           <th>Capacidade</th>
           <th>Área Painel</th>
           <th>Eficiência</th>
-          <th>Última Leitura</th>
+          <th>Último contato</th>
           <th>% OK</th>
           <th>Status</th>
         </tr>
@@ -126,7 +131,15 @@
           <td>{{if .Device.CapacityKW}}{{formatFloat (derefFloat .Device.CapacityKW) 1}} kW{{else}}-{{end}}</td>
           <td>{{if .Device.PanelAreaM2}}{{formatFloat (derefFloat .Device.PanelAreaM2) 1}} m²{{else}}-{{end}}</td>
           <td>{{if .Device.Efficiency}}{{formatPercent (multiplyFloat (derefFloat .Device.Efficiency) 100.0)}}{{else}}-{{end}}</td>
-          <td>{{formatTime .LastReadingAt $.Plant.Timezone}}</td>
+          <td>
+            {{if .Device.LastSeenAt}}
+              {{formatTime .Device.LastSeenAt $.Plant.Timezone}}
+            {{else if .LastReadingAt}}
+              {{formatTime .LastReadingAt $.Plant.Timezone}}
+            {{else}}
+              -
+            {{end}}
+          </td>
           <td>
             {{if gt .TotalReadings 0}}
               {{formatPercent (multiplyFloat (divideFloat .OKReadings .TotalReadings) 100.0)}}
@@ -140,7 +153,7 @@
             {{else if and .Device.Online (not (derefBool .Device.Online))}}
               <span class="badge badge-critical">Offline</span>
             {{else}}
-              <span class="badge badge-neutral">Ativo</span>
+              <span class="badge badge-success">Online</span>
             {{end}}
           </td>
         </tr>

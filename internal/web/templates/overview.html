@@ -9,12 +9,17 @@
   <div class="card">
     <div class="card-title">Usinas Monitoradas</div>
     <div class="card-value">{{.TotalPlants}}</div>
-    <div class="card-sub">{{.TotalDevices}} inversores cadastrados</div>
+    <div class="card-sub">{{.TotalDevices}} {{if eq .TotalDevices 1}}dispositivo cadastrado{{else}}dispositivos cadastrados{{end}}</div>
   </div>
   <div class="card">
     <div class="card-title">Geração de Ontem</div>
-    <div class="card-value">{{formatFloat .TotalYesterdayMeasured 1}} <span style="font-size:1rem;font-weight:normal;">kWh</span></div>
-    <div class="card-sub">Esperado: {{formatFloat .TotalYesterdayExpected 1}} kWh</div>
+    {{if .HasAnyYesterdayReadings}}
+      <div class="card-value">{{formatFloat .TotalYesterdayMeasured 1}} <span style="font-size:1rem;font-weight:normal;">kWh</span></div>
+      <div class="card-sub">Esperado: {{formatFloat .TotalYesterdayExpected 1}} kWh</div>
+    {{else}}
+      <div class="card-value">-</div>
+      <div class="card-sub">sem leitura ontem</div>
+    {{end}}
   </div>
   <div class="card">
     <div class="card-title">Desvio Médio de Ontem</div>
@@ -43,11 +48,7 @@
 {{if eq (len .Plants) 0}}
 <div class="empty-state">
   <h3>Nenhuma usina cadastrada</h3>
-  <p>Para começar a monitorar a geração solar, adicione uma fonte de dados ou importe uma planilha:</p>
-  <pre style="background:var(--bg);display:inline-block;padding:12px 16px;border-radius:6px;border:1px solid var(--border);text-align:left;font-size:0.85rem;margin:12px 0;">
-solarguard import-xlsx --file "dados.xlsx" --source planilha --plant-id P1 --plant-name "Usina Solar 1"
-  </pre>
-  <p><a href="/manage" class="btn">Configurar Fontes na Gestão</a></p>
+  <p>Cadastre uma usina na aba de Gestão ou aguarde a sincronização de dados.</p>
 </div>
 {{else}}
 <div class="table-container">
@@ -112,17 +113,23 @@ solarguard import-xlsx --file "dados.xlsx" --source planilha --plant-id P1 --pla
           {{end}}
         </td>
         <td>
-          {{formatTime .YesterdayStats.LastReadingAt .Plant.Timezone}}
+          {{if .YesterdayStats.LastMeasuredDate}}
+            {{.YesterdayStats.LastMeasuredDate}}
+          {{else}}
+            <span style="color:var(--text-muted);">-</span>
+          {{end}}
         </td>
         <td>
-          {{if eq .StatusBadge "Crítico"}}
+          {{if eq .StatusBadge "Sem comunicação"}}
+            <span class="badge badge-critical">Sem comunicação</span>
+          {{else if eq .StatusBadge "Crítico"}}
             <span class="badge badge-critical">Crítico</span>
           {{else if eq .StatusBadge "Atenção"}}
             <span class="badge badge-warning">Atenção</span>
-          {{else if eq .StatusBadge "Sem dados"}}
-            <span class="badge badge-neutral">Sem dados</span>
+          {{else if eq .StatusBadge "Sem dados recentes"}}
+            <span class="badge badge-neutral">Sem dados recentes</span>
           {{else}}
-            <span class="badge badge-success">Normal</span>
+            <span class="badge badge-success">OK</span>
           {{end}}
         </td>
         <td>

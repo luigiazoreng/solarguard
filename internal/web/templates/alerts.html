@@ -40,14 +40,16 @@
     <label for="rule" style="display:block;font-size:0.8rem;color:var(--text-muted);margin-bottom:4px;">Regra</label>
     <select id="rule" name="rule" class="form-control" onchange="this.form.submit()">
       <option value="" {{if eq .FilterRule ""}}selected{{end}}>Todas as regras</option>
-      <option value="zero_generation" {{if eq .FilterRule "zero_generation"}}selected{{end}}>zero_generation</option>
-      <option value="under_expected" {{if eq .FilterRule "under_expected"}}selected{{end}}>under_expected</option>
-      <option value="implausible_reading" {{if eq .FilterRule "implausible_reading"}}selected{{end}}>implausible_reading</option>
-      <option value="missing_data" {{if eq .FilterRule "missing_data"}}selected{{end}}>missing_data</option>
-      <option value="stuck_value" {{if eq .FilterRule "stuck_value"}}selected{{end}}>stuck_value</option>
-      <option value="plant_no_generation" {{if eq .FilterRule "plant_no_generation"}}selected{{end}}>plant_no_generation</option>
-      <option value="gradual_loss" {{if eq .FilterRule "gradual_loss"}}selected{{end}}>gradual_loss</option>
-      <option value="peer_divergence" {{if eq .FilterRule "peer_divergence"}}selected{{end}}>peer_divergence</option>
+      <option value="zero_generation" {{if eq .FilterRule "zero_generation"}}selected{{end}}>Geração zerada</option>
+      <option value="under_expected" {{if eq .FilterRule "under_expected"}}selected{{end}}>Abaixo do esperado</option>
+      <option value="implausible_reading" {{if eq .FilterRule "implausible_reading"}}selected{{end}}>Leitura implausível</option>
+      <option value="missing_data" {{if eq .FilterRule "missing_data"}}selected{{end}}>Dados ausentes</option>
+      <option value="stuck_value" {{if eq .FilterRule "stuck_value"}}selected{{end}}>Leitura travada</option>
+      <option value="plant_no_generation" {{if eq .FilterRule "plant_no_generation"}}selected{{end}}>Usina sem geração</option>
+      <option value="gradual_loss" {{if eq .FilterRule "gradual_loss"}}selected{{end}}>Perda gradual</option>
+      <option value="peer_divergence" {{if eq .FilterRule "peer_divergence"}}selected{{end}}>Divergência entre dispositivos</option>
+      <option value="stale_data" {{if eq .FilterRule "stale_data"}}selected{{end}}>Sem dados recentes</option>
+      <option value="device_offline" {{if eq .FilterRule "device_offline"}}selected{{end}}>Sem comunicação</option>
     </select>
   </div>
 </form>
@@ -75,11 +77,11 @@
     <tbody>
       {{range .Alerts}}
       <tr>
-        <td style="font-weight:600;">
+        <td style="font-weight:600; white-space: normal; min-width: 200px;">
           <a href="/alerts/{{.Alert.ID}}">{{.Alert.Title}}</a>
         </td>
         <td>{{.PlantName}}</td>
-        <td>{{if .DeviceName}}{{.DeviceName}}{{else}}<span style="color:var(--text-muted);">Toda a usina</span>{{end}}</td>
+        <td style="white-space: normal; min-width: 140px;">{{if .DeviceName}}{{.DeviceName}}{{else}}<span style="color:var(--text-muted);">Toda a usina</span>{{end}}</td>
         <td>
           {{if eq .Alert.Severity "critical"}}
             <span class="badge badge-critical">Crítico</span>
@@ -99,7 +101,7 @@
           {{end}}
         </td>
         <td>{{formatDate .Alert.FirstDate}} a {{formatDate .Alert.LastDate}}</td>
-        <td>{{formatTime (makeTimePtr .Alert.CreatedAt) "America/Sao_Paulo"}}</td>
+        <td>{{.DetectedOn}}</td>
         <td>
           <a href="/alerts/{{.Alert.ID}}" class="btn btn-secondary btn-sm">Detalhes</a>
         </td>

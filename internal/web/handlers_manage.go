@@ -145,6 +145,19 @@ func (s *Server) handleManage(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func parseNumberInput(s string) (*float64, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, nil
+	}
+	s = strings.ReplaceAll(s, ",", ".")
+	val, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return nil, err
+	}
+	return &val, nil
+}
+
 func (s *Server) handleManagePlantUpdate(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	idStr := r.PathValue("id")
@@ -161,18 +174,24 @@ func (s *Server) handleManagePlantUpdate(w http.ResponseWriter, r *http.Request)
 	}
 
 	var latPtr, lonPtr *float64
-	latStr := strings.TrimSpace(r.PostFormValue("latitude"))
-	lonStr := strings.TrimSpace(r.PostFormValue("longitude"))
+	latStr := r.PostFormValue("latitude")
+	lonStr := r.PostFormValue("longitude")
 
-	if latStr != "" {
-		if val, err := strconv.ParseFloat(strings.ReplaceAll(latStr, ",", "."), 64); err == nil {
-			latPtr = &val
+	if strings.TrimSpace(latStr) != "" {
+		val, err := parseNumberInput(latStr)
+		if err != nil {
+			http.Redirect(w, r, "/manage?error=Valor+inválido+para+latitude", http.StatusSeeOther)
+			return
 		}
+		latPtr = val
 	}
-	if lonStr != "" {
-		if val, err := strconv.ParseFloat(strings.ReplaceAll(lonStr, ",", "."), 64); err == nil {
-			lonPtr = &val
+	if strings.TrimSpace(lonStr) != "" {
+		val, err := parseNumberInput(lonStr)
+		if err != nil {
+			http.Redirect(w, r, "/manage?error=Valor+inválido+para+longitude", http.StatusSeeOther)
+			return
 		}
+		lonPtr = val
 	}
 
 	if err := s.store.UpdatePlantDetails(ctx, plantID, timezone, latPtr, lonPtr); err != nil {
@@ -195,25 +214,34 @@ func (s *Server) handleManageDeviceUpdate(w http.ResponseWriter, r *http.Request
 
 	var capPtr, areaPtr, effPtr *float64
 
-	capStr := strings.TrimSpace(r.PostFormValue("capacity_kw"))
-	if capStr != "" {
-		if val, err := strconv.ParseFloat(strings.ReplaceAll(capStr, ",", "."), 64); err == nil {
-			capPtr = &val
+	capStr := r.PostFormValue("capacity_kw")
+	if strings.TrimSpace(capStr) != "" {
+		val, err := parseNumberInput(capStr)
+		if err != nil {
+			http.Redirect(w, r, "/manage?error=Valor+inválido+para+capacidade", http.StatusSeeOther)
+			return
 		}
+		capPtr = val
 	}
 
-	areaStr := strings.TrimSpace(r.PostFormValue("panel_area_m2"))
-	if areaStr != "" {
-		if val, err := strconv.ParseFloat(strings.ReplaceAll(areaStr, ",", "."), 64); err == nil {
-			areaPtr = &val
+	areaStr := r.PostFormValue("panel_area_m2")
+	if strings.TrimSpace(areaStr) != "" {
+		val, err := parseNumberInput(areaStr)
+		if err != nil {
+			http.Redirect(w, r, "/manage?error=Valor+inválido+para+área+do+painel", http.StatusSeeOther)
+			return
 		}
+		areaPtr = val
 	}
 
-	effStr := strings.TrimSpace(r.PostFormValue("efficiency"))
-	if effStr != "" {
-		if val, err := strconv.ParseFloat(strings.ReplaceAll(effStr, ",", "."), 64); err == nil {
-			effPtr = &val
+	effStr := r.PostFormValue("efficiency")
+	if strings.TrimSpace(effStr) != "" {
+		val, err := parseNumberInput(effStr)
+		if err != nil {
+			http.Redirect(w, r, "/manage?error=Valor+inválido+para+eficiência", http.StatusSeeOther)
+			return
 		}
+		effPtr = val
 	}
 
 	if err := s.store.UpdateDevice(ctx, deviceID, capPtr, areaPtr, effPtr); err != nil {
