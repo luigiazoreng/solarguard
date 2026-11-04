@@ -1,0 +1,742 @@
+// Package growatt implements the read-only connector for Growatt inverters and plants.
+package growatt
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/luigiazoreng/solarguard/internal/connector"
+	"github.com/luigiazoreng/solarguard/internal/domain"
+)
+
+// Config configures a Growatt connector instance.
+type Config struct {
+	BaseURL         string
+	Token           string
+	Client          *http.Client
+	DefaultTimezone string
+}
+
+// Connector is a read-only client for the Growatt OpenAPI.
+type Connector struct {
+	baseURL         string
+	token           string
+	client          *http.Client
+	defaultTimezone string
+}
+
+// New creates a new Growatt connector with default configuration.
+func New(baseURL, token string, client *http.Client) *Connector {
+	return NewWithConfig(Config{
+		BaseURL:         baseURL,
+		Token:           token,
+		Client:          client,
+		DefaultTimezone: "America/Sao_Paulo",
+	})
+}
+
+// NewWithConfig creates a new Growatt connector with explicit configuration.
+func NewWithConfig(cfg Config) *Connector {
+	if cfg.Client == nil {
+		cfg.Client = &http.Client{Timeout: 30 * time.Second}
+	}
+	if cfg.DefaultTimezone == "" {
+		cfg.DefaultTimezone = "America/Sao_Paulo"
+	}
+	base := strings.TrimRight(cfg.BaseURL, "/")
+	return &Connector{
+		baseURL:         base,
+		token:           cfg.Token,
+		client:          cfg.Client,
+		defaultTimezone: cfg.DefaultTimezone,
+	}
+}
+
+// Kind returns the provider name.
+func (c *Connector) Kind() string {
+	return "growatt"
+}
+
+// MakeLimitKey builds a deterministic, stable rate limit key: endpoint + "?" + params sorted by name.
+func MakeLimitKey(endpoint string, params map[string]string) string {
+	if len(params) == 0 {
+		return endpoint + "?"
+	}
+	keys := make([]string, 0, len(params))
+	for k := range params {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var sb strings.Builder
+	sb.WriteString(endpoint)
+	sb.WriteByte('?')
+	for i, k := range keys {
+		if i > 0 {
+			sb.WriteByte('&')
+		}
+		sb.WriteString(k)
+		sb.WriteByte('=')
+		sb.WriteString(params[k])
+	}
+	return sb.String()
+}
+
+// Discovery returns the initial task to list plants.
+func (c *Connector) Discovery() []connector.Task {
+	params := map[string]string{
+		"page":    "1",
+		"perpage": "100",
+	}
+	return []connector.Task{
+		{
+			Endpoint:       "plant/list",
+			Params:         params,
+			LimitKey:       MakeLimitKey("plant/list", params),
+			MinInterval:    5 * time.Minute,
+			DailyBudgetKey: "plant/list",
+			DailyBudget:    10,
+			Priority:       20,
+		},
+	}
+}
+
+// DailyTasks produces daily collection tasks for a plant and date.
+// For plants with real devices, one device/inverter/day_energy task per device is created.
+// For plants without devices, one plant/energy task is created for a synthetic plant device.
+func (c *Connector) DailyTasks(plant domain.Plant, devices []domain.Device, date string) []connector.Task {
+	var realDevices []domain.Device
+	for _, d := range devices {
+		if d.Kind != "plant" && !strings.HasPrefix(d.ExternalID, "plant:") {
+			realDevices = append(realDevices, d)
+		}
+	}
+
+	tz := plant.Timezone
+	if tz == "" {
+		tz = c.defaultTimezone
+	}
+
+	if len(realDevices) == 0 {
+		params := map[string]string{
+			"plant_id":   plant.ExternalID,
+			"start_date": date,
+			"end_date":   date,
+			"time_unit":  "day",
+			"timezone":   tz,
+		}
+		return []connector.Task{
+			{
+				Endpoint:       "plant/energy",
+				Params:         params,
+				LimitKey:       MakeLimitKey("plant/energy", params),
+				MinInterval:    5 * time.Minute,
+				DailyBudgetKey: "plant/energy",
+				DailyBudget:    10,
+				Priority:       10,
+			},
+		}
+	}
+
+	tasks := make([]connector.Task, 0, len(realDevices))
+	for _, dev := range realDevices {
+		params := map[string]string{
+			"device_sn": dev.ExternalID,
+			"date":      date,
+			"plant_id":  plant.ExternalID,
+			"timezone":  tz,
+		}
+		tasks = append(tasks, connector.Task{
+			Endpoint:    "device/inverter/day_energy",
+			Params:      params,
+			LimitKey:    MakeLimitKey("device/inverter/day_energy", params),
+			MinInterval: 5 * time.Minute,
+			Priority:    10,
+		})
+	}
+	return tasks
+}
+
+type apiEnvelope struct {
+	ErrorCode int             `json:"error_code"`
+	ErrorMsg  string          `json:"error_msg"`
+	Data      json.RawMessage `json:"data"`
+}
+
+// Whitelist of valid query parameters per Growatt endpoint.
+var endpointAllowedParams = map[string][]string{
+	"plant/list":                 {"page", "perpage"},
+	"plant/details":              {"plant_id"},
+	"plant/data":                 {"plant_id"},
+	"plant/energy":               {"plant_id", "start_date", "end_date", "time_unit"},
+	"plant/power":                {"plant_id", "date"},
+	"device/list":                {"plant_id", "page", "perpage"},
+	"device/inverter/day_energy": {"device_sn", "date"},
+}
+
+// Execute performs one provider call via HTTP GET.
+func (c *Connector) Execute(ctx context.Context, task connector.Task) (connector.Result, error) {
+	relPath := strings.TrimPrefix(task.Endpoint, "/")
+	if !strings.HasPrefix(relPath, "v1/") {
+		relPath = "v1/" + relPath
+	}
+	rawURL := c.baseURL + "/" + relPath
+
+	// Build query string using allowed params for the endpoint
+	q := url.Values{}
+	allowed, isKnown := endpointAllowedParams[strings.TrimPrefix(task.Endpoint, "/")]
+	if isKnown {
+		for _, param := range allowed {
+			if v, ok := task.Params[param]; ok {
+				q.Set(param, v)
+			}
+		}
+	} else {
+		for k, v := range task.Params {
+			q.Set(k, v)
+		}
+	}
+
+	if encoded := q.Encode(); encoded != "" {
+		rawURL += "?" + encoded
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return connector.Result{}, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("token", c.token)
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return connector.Result{}, c.sanitizeError(fmt.Errorf("execute get %s: %w", task.Endpoint, err))
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return connector.Result{}, c.sanitizeError(fmt.Errorf("read response body: %w", err))
+	}
+
+	res := connector.Result{Raw: body}
+
+	// Envelope parsing
+	var env apiEnvelope
+	if err := json.Unmarshal(body, &env); err != nil {
+		return res, c.sanitizeError(fmt.Errorf("unmarshal envelope: %w", err))
+	}
+
+	if env.ErrorCode == 10012 {
+		return res, &connector.RateLimitError{RetryAfter: 5 * time.Minute}
+	}
+	if env.ErrorCode != 0 {
+		return res, c.sanitizeError(fmt.Errorf("growatt error %d: %s", env.ErrorCode, env.ErrorMsg))
+	}
+	if resp.StatusCode != http.StatusOK {
+		return res, c.sanitizeError(fmt.Errorf("growatt http status %d", resp.StatusCode))
+	}
+
+	cleanEndpoint := strings.TrimPrefix(task.Endpoint, "/")
+	cleanEndpoint = strings.TrimPrefix(cleanEndpoint, "v1/")
+
+	switch cleanEndpoint {
+	case "plant/list":
+		err = c.parsePlantList(task, env.Data, &res)
+	case "plant/details":
+		err = c.parsePlantDetails(task, env.Data, &res)
+	case "device/list":
+		err = c.parseDeviceList(task, env.Data, &res)
+	case "device/inverter/day_energy":
+		err = c.parseDayEnergy(task, body, env.Data, &res)
+	case "plant/energy":
+		err = c.parsePlantEnergy(task, env.Data, &res)
+	}
+
+	if err != nil {
+		return res, c.sanitizeError(err)
+	}
+
+	return res, nil
+}
+
+func (c *Connector) sanitizeError(err error) error {
+	if err == nil || c.token == "" {
+		return err
+	}
+	clean := strings.ReplaceAll(err.Error(), c.token, "[REDACTED]")
+	return errors.New(clean)
+}
+
+func (c *Connector) parsePlantList(task connector.Task, data json.RawMessage, res *connector.Result) error {
+	var payload struct {
+		Plants []struct {
+			PlantID   any    `json:"plant_id"`
+			PlantName string `json:"plant_name"`
+			Name      string `json:"name"`
+		} `json:"plants"`
+		Count any `json:"count"`
+	}
+
+	if len(data) > 0 && string(data) != "null" {
+		if err := json.Unmarshal(data, &payload); err != nil {
+			return fmt.Errorf("unmarshal plant list data: %w", err)
+		}
+	}
+
+	page, _ := strconv.Atoi(task.Params["page"])
+	if page < 1 {
+		page = 1
+	}
+	perpage, _ := strconv.Atoi(task.Params["perpage"])
+	if perpage < 1 {
+		perpage = 100
+	}
+	count := parseNumberInt(payload.Count)
+
+	for _, p := range payload.Plants {
+		extID := parseNumberString(p.PlantID)
+		name := p.PlantName
+		if name == "" {
+			name = p.Name
+		}
+		if extID == "" {
+			continue
+		}
+		res.Plants = append(res.Plants, connector.PlantInfo{
+			ExternalID: extID,
+			Name:       name,
+		})
+
+		// Followup: plant/details
+		pDetailsParams := map[string]string{"plant_id": extID}
+		res.Followups = append(res.Followups, connector.Task{
+			Endpoint:    "plant/details",
+			Params:      pDetailsParams,
+			LimitKey:    MakeLimitKey("plant/details", pDetailsParams),
+			MinInterval: 5 * time.Minute,
+			Priority:    15,
+		})
+
+		// Followup: device/list page 1
+		devListParams := map[string]string{
+			"plant_id": extID,
+			"page":     "1",
+			"perpage":  "100",
+		}
+		res.Followups = append(res.Followups, connector.Task{
+			Endpoint:    "device/list",
+			Params:      devListParams,
+			LimitKey:    MakeLimitKey("device/list", devListParams),
+			MinInterval: 5 * time.Minute,
+			Priority:    15,
+		})
+	}
+
+	// Followup: next page if count requires one
+	if page*perpage < count {
+		nextParams := map[string]string{
+			"page":    strconv.Itoa(page + 1),
+			"perpage": strconv.Itoa(perpage),
+		}
+		res.Followups = append(res.Followups, connector.Task{
+			Endpoint:       "plant/list",
+			Params:         nextParams,
+			LimitKey:       MakeLimitKey("plant/list", nextParams),
+			MinInterval:    5 * time.Minute,
+			DailyBudgetKey: "plant/list",
+			DailyBudget:    10,
+			Priority:       20,
+		})
+	}
+
+	return nil
+}
+
+func (c *Connector) parsePlantDetails(task connector.Task, data json.RawMessage, res *connector.Result) error {
+	var payload struct {
+		PlantID   any    `json:"plant_id"`
+		PlantName string `json:"plant_name"`
+		Name      string `json:"name"`
+		Timezone  any    `json:"timezone"`
+		Latitude  any    `json:"latitude"`
+		Longitude any    `json:"longitude"`
+		PeakPower any    `json:"peak_power"`
+	}
+
+	if len(data) > 0 && string(data) != "null" {
+		if err := json.Unmarshal(data, &payload); err != nil {
+			return fmt.Errorf("unmarshal plant details: %w", err)
+		}
+	}
+
+	extID := parseNumberString(payload.PlantID)
+	if extID == "" {
+		extID = task.Params["plant_id"]
+	}
+	name := payload.PlantName
+	if name == "" {
+		name = payload.Name
+	}
+
+	rawTZ := parseNumberString(payload.Timezone)
+	tz := ParseTimezone(rawTZ, c.defaultTimezone)
+
+	lat := parseNumberFloat(payload.Latitude)
+	lon := parseNumberFloat(payload.Longitude)
+	peakPower := parseNumberFloat(payload.PeakPower)
+
+	res.Plants = append(res.Plants, connector.PlantInfo{
+		ExternalID:  extID,
+		Name:        name,
+		Timezone:    tz,
+		Latitude:    lat,
+		Longitude:   lon,
+		PeakPowerKW: peakPower,
+	})
+
+	return nil
+}
+
+func (c *Connector) parseDeviceList(task connector.Task, data json.RawMessage, res *connector.Result) error {
+	var payload struct {
+		Devices []struct {
+			DeviceSN   any    `json:"device_sn"`
+			SN         any    `json:"sn"`
+			DeviceName string `json:"device_name"`
+			DeviceType any    `json:"device_type"`
+			Lost       any    `json:"lost"`
+		} `json:"devices"`
+		Count any `json:"count"`
+	}
+
+	if len(data) > 0 && string(data) != "null" {
+		if err := json.Unmarshal(data, &payload); err != nil {
+			return fmt.Errorf("unmarshal device list: %w", err)
+		}
+	}
+
+	plantExtID := task.Params["plant_id"]
+	page, _ := strconv.Atoi(task.Params["page"])
+	if page < 1 {
+		page = 1
+	}
+	perpage, _ := strconv.Atoi(task.Params["perpage"])
+	if perpage < 1 {
+		perpage = 100
+	}
+	count := parseNumberInt(payload.Count)
+
+	for _, d := range payload.Devices {
+		sn := parseNumberString(d.DeviceSN)
+		if sn == "" {
+			sn = parseNumberString(d.SN)
+		}
+		if sn == "" {
+			continue
+		}
+		name := d.DeviceName
+		if name == "" {
+			name = sn
+		}
+		lostVal := parseNumberInt(d.Lost)
+		online := (lostVal == 0)
+
+		res.Devices = append(res.Devices, connector.DeviceInfo{
+			PlantExternalID: plantExtID,
+			ExternalID:      sn,
+			Name:            name,
+			Kind:            "inverter",
+			Online:          &online,
+		})
+	}
+
+	if page*perpage < count {
+		nextParams := map[string]string{
+			"plant_id": plantExtID,
+			"page":     strconv.Itoa(page + 1),
+			"perpage":  strconv.Itoa(perpage),
+		}
+		res.Followups = append(res.Followups, connector.Task{
+			Endpoint:    "device/list",
+			Params:      nextParams,
+			LimitKey:    MakeLimitKey("device/list", nextParams),
+			MinInterval: 5 * time.Minute,
+			Priority:    15,
+		})
+	}
+
+	return nil
+}
+
+func (c *Connector) parseDayEnergy(task connector.Task, rawBody, data json.RawMessage, res *connector.Result) error {
+	// Shape 1: fields at root level (device_sn, dataloggerSn, data)
+	// Shape 2: fields nested under data
+	var root struct {
+		DeviceSN string          `json:"device_sn"`
+		Data     json.RawMessage `json:"data"`
+	}
+	_ = json.Unmarshal(rawBody, &root)
+
+	var nested struct {
+		DeviceSN string          `json:"device_sn"`
+		Data     json.RawMessage `json:"data"`
+	}
+	if len(data) > 0 && string(data) != "null" {
+		_ = json.Unmarshal(data, &nested)
+	}
+
+	deviceSN := root.DeviceSN
+	if deviceSN == "" {
+		deviceSN = nested.DeviceSN
+	}
+	if deviceSN == "" {
+		deviceSN = task.Params["device_sn"]
+	}
+
+	// Determine data raw message
+	var rawEnergyData json.RawMessage
+	if len(root.Data) > 0 && !bytes.Equal(root.Data, []byte("null")) {
+		// Could root.Data be an object with nested data?
+		var inner struct {
+			Data json.RawMessage `json:"data"`
+		}
+		if err := json.Unmarshal(root.Data, &inner); err == nil && len(inner.Data) > 0 {
+			rawEnergyData = inner.Data
+		} else {
+			rawEnergyData = root.Data
+		}
+	} else if len(nested.Data) > 0 && !bytes.Equal(nested.Data, []byte("null")) {
+		rawEnergyData = nested.Data
+	}
+
+	rawVal := strings.Trim(string(rawEnergyData), "\"")
+	valFloat, err := strconv.ParseFloat(rawVal, 64)
+	var valPtr *float64
+	if err == nil {
+		valPtr = &valFloat
+	}
+
+	date := task.Params["date"]
+	tz := task.Params["timezone"]
+	if tz == "" {
+		tz = c.defaultTimezone
+	}
+
+	start, end, err := domain.LocalDay(date, tz)
+	if err != nil {
+		return fmt.Errorf("compute local day for %s (%s): %w", date, tz, err)
+	}
+
+	plantExtID := task.Params["plant_id"]
+
+	res.Readings = append(res.Readings, connector.ReadingInfo{
+		PlantExternalID:  plantExtID,
+		DeviceExternalID: deviceSN,
+		Metric:           domain.MetricEnergyKWh,
+		PeriodStart:      start,
+		PeriodEnd:        end,
+		Value:            valPtr,
+		RawValue:         rawVal,
+	})
+
+	return nil
+}
+
+func (c *Connector) parsePlantEnergy(task connector.Task, data json.RawMessage, res *connector.Result) error {
+	var payload struct {
+		Energys []struct {
+			Date   string `json:"date"`
+			Energy any    `json:"energy"`
+		} `json:"energys"`
+	}
+
+	if len(data) > 0 && string(data) != "null" {
+		if err := json.Unmarshal(data, &payload); err != nil {
+			return fmt.Errorf("unmarshal plant energy: %w", err)
+		}
+	}
+
+	plantExtID := task.Params["plant_id"]
+	syntheticDeviceID := "plant:" + plantExtID
+
+	// Synthetic plant device
+	res.Devices = append(res.Devices, connector.DeviceInfo{
+		PlantExternalID: plantExtID,
+		ExternalID:      syntheticDeviceID,
+		Name:            "Plant " + plantExtID,
+		Kind:            "plant",
+	})
+
+	tz := task.Params["timezone"]
+	if tz == "" {
+		tz = c.defaultTimezone
+	}
+
+	for _, e := range payload.Energys {
+		rawVal := parseNumberString(e.Energy)
+		valFloat, err := strconv.ParseFloat(rawVal, 64)
+		var valPtr *float64
+		if err == nil {
+			valPtr = &valFloat
+		}
+
+		start, end, err := domain.LocalDay(e.Date, tz)
+		if err != nil {
+			return fmt.Errorf("compute local day for %s: %w", e.Date, err)
+		}
+
+		res.Readings = append(res.Readings, connector.ReadingInfo{
+			PlantExternalID:  plantExtID,
+			DeviceExternalID: syntheticDeviceID,
+			Metric:           domain.MetricEnergyKWh,
+			PeriodStart:      start,
+			PeriodEnd:        end,
+			Value:            valPtr,
+			RawValue:         rawVal,
+		})
+	}
+
+	return nil
+}
+
+// ParseTimezone normalizes Growatt time zone offsets and names into an IANA name loadable by time.LoadLocation.
+// If the input cannot be loaded, defaultTZ is returned.
+func ParseTimezone(raw, defaultTZ string) string {
+	if defaultTZ == "" {
+		defaultTZ = "America/Sao_Paulo"
+	}
+	tz := strings.Trim(strings.TrimSpace(raw), `"'`)
+	if tz == "" {
+		return defaultTZ
+	}
+
+	// If Go can directly load it, use it
+	if _, err := time.LoadLocation(tz); err == nil {
+		return tz
+	}
+
+	// Handle numeric offsets such as "-3", "+8", "-03:00", "+08", "-3.0", "3"
+	tz = strings.TrimPrefix(tz, "GMT")
+	tz = strings.TrimPrefix(tz, "UTC")
+	offsetStr := strings.TrimSpace(tz)
+
+	// Split by ":" if in HH:MM format
+	colonIdx := strings.Index(offsetStr, ":")
+	if colonIdx != -1 {
+		offsetStr = offsetStr[:colonIdx]
+	}
+
+	hours, err := strconv.ParseFloat(offsetStr, 64)
+	if err == nil {
+		intHours := int(hours)
+		if intHours == 0 {
+			return "UTC"
+		}
+		// If offset is -3 and defaultTZ is America/Sao_Paulo (which is UTC-3), use America/Sao_Paulo
+		if intHours == -3 && defaultTZ == "America/Sao_Paulo" {
+			return "America/Sao_Paulo"
+		}
+		// In IANA tzdb:
+		// Positive offset (ahead of UTC) is Etc/GMT-<N>
+		// Negative offset (behind UTC) is Etc/GMT+<N>
+		var gmtName string
+		if intHours < 0 {
+			gmtName = fmt.Sprintf("Etc/GMT+%d", -intHours)
+		} else {
+			gmtName = fmt.Sprintf("Etc/GMT-%d", intHours)
+		}
+		if _, err := time.LoadLocation(gmtName); err == nil {
+			return gmtName
+		}
+	}
+
+	return defaultTZ
+}
+
+func parseNumberString(v any) string {
+	if v == nil {
+		return ""
+	}
+	switch val := v.(type) {
+	case string:
+		return strings.Trim(val, `"'`)
+	case float64:
+		if val == float64(int64(val)) {
+			return strconv.FormatInt(int64(val), 10)
+		}
+		return strconv.FormatFloat(val, 'f', -1, 64)
+	case int64:
+		return strconv.FormatInt(val, 10)
+	case int:
+		return strconv.Itoa(val)
+	case json.Number:
+		return val.String()
+	default:
+		return fmt.Sprintf("%v", v)
+	}
+}
+
+func parseNumberInt(v any) int {
+	if v == nil {
+		return 0
+	}
+	switch val := v.(type) {
+	case int:
+		return val
+	case int64:
+		return int(val)
+	case float64:
+		return int(val)
+	case string:
+		n, _ := strconv.Atoi(strings.TrimSpace(val))
+		return n
+	case json.Number:
+		n, _ := val.Int64()
+		return int(n)
+	default:
+		return 0
+	}
+}
+
+func parseNumberFloat(v any) *float64 {
+	if v == nil {
+		return nil
+	}
+	switch val := v.(type) {
+	case float64:
+		return &val
+	case int:
+		f := float64(val)
+		return &f
+	case int64:
+		f := float64(val)
+		return &f
+	case string:
+		s := strings.TrimSpace(val)
+		if s == "" {
+			return nil
+		}
+		f, err := strconv.ParseFloat(s, 64)
+		if err == nil {
+			return &f
+		}
+		return nil
+	case json.Number:
+		f, err := val.Float64()
+		if err == nil {
+			return &f
+		}
+		return nil
+	default:
+		return nil
+	}
+}
