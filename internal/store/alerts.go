@@ -47,13 +47,6 @@ type RuleConfig struct {
 	ParamsJSON string
 }
 
-// Prediction holds expected generation for a device on a local date.
-type Prediction struct {
-	DeviceID    int64
-	Date        string
-	KWHExpected float64
-}
-
 // ListAlerts returns alerts matching the filter, ordered by first_date DESC, id DESC.
 func (s *Store) ListAlerts(ctx context.Context, f AlertFilter) ([]Alert, error) {
 	q := `SELECT id, plant_id, device_id, rule, severity, status, dedupe_key, title,
@@ -363,7 +356,7 @@ func (s *Store) ListActivePredictions(ctx context.Context, plantID int64) ([]Pre
 	var out []Prediction
 	for rows.Next() {
 		var pred Prediction
-		if err := rows.Scan(&pred.DeviceID, &pred.Date, &pred.KWHExpected); err != nil {
+		if err := rows.Scan(&pred.DeviceID, &pred.Date, &pred.KWhExpected); err != nil {
 			return nil, fmt.Errorf("scan prediction: %w", err)
 		}
 		out = append(out, pred)

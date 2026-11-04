@@ -186,7 +186,7 @@ func Run(ctx context.Context, st *store.Store, plantID int64, opts Options) (Sum
 		if preds[p.DeviceID] == nil {
 			preds[p.DeviceID] = make(map[string]float64)
 		}
-		preds[p.DeviceID][p.Date] = p.KWHExpected
+		preds[p.DeviceID][p.Date] = p.KWhExpected
 	}
 
 	summary := Summary{
