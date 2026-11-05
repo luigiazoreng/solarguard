@@ -14,6 +14,7 @@ Binário Go único que coleta geração de várias plantas, detecta falhas, esti
 6. **O LLM não decide nada.** Regras e modelos numéricos geram alertas e previsões. O LLM lê via MCP e só pode salvar rascunho de relatório.
 7. **Conectores só leem.** Nunca implementar endpoints que criem, alterem ou apaguem dados no provedor.
 8. **Sem segredos no repositório.** Os tokens das contas ficam criptografados no banco, e a chave fica no ambiente. `testdata` usa dados fictícios: nada de planilha real, identificadores reais ou payload capturado.
+9. **Cada conta vê só os próprios dados.** Toda rota que recebe um ID confere o dono, e outra conta recebe 404. Uma nova rota precisa entrar no teste `TestEveryRouteHasAnIsolationCheck`. Plantas sem dono ficam ocultas até um token que as liste comprovar acesso. O MCP é credencial de quem administra o servidor e lê todas as contas.
 
 ## Módulos
 
@@ -23,7 +24,11 @@ Binário Go único que coleta geração de várias plantas, detecta falhas, esti
 | `internal/connector` | Contrato dos conectores e subpacotes por provedor |
 | `internal/store` | SQLite e migrações |
 | `internal/fileimport` | Importação de planilhas |
-| `internal/ingest` | Fila persistente e limite de chamadas |
+| `internal/ingest` | Fila persistente, limite de chamadas e início da coleta por conta |
+| `internal/secrets` | Criptografia dos tokens das contas |
+| `internal/weather` | Sincronização do clima |
+| `internal/analytics` | Cálculos usados pelo painel, relatórios e MCP |
+| `internal/pipeline` | Sequência diária por planta |
 | `internal/quality` | Classificação das leituras |
 | `internal/alerts` | Regras e ciclo de vida dos alertas |
 | `internal/forecast` | Modelos em Go e backtest |
@@ -43,6 +48,7 @@ Binário Go único que coleta geração de várias plantas, detecta falhas, esti
 6. API e painel.
 7. Servidor MCP e relatórios.
 8. Teste ponta a ponta e documentação.
+9. Contas, token por conta e deploy com Dokploy.
 
 ## Convenções
 

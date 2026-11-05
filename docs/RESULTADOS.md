@@ -68,7 +68,7 @@ Reprocessamento de toda a base: 23 incidentes.
 
 ## Plantas reais da Growatt
 
-Cinco plantas com um inversor cada, identificadas por letras para não expor os clientes. Clima do Open-Meteo nas coordenadas de cada planta. Validação temporal com janela expansível, só em leituras válidas.
+Cinco plantas com um inversor cada, identificadas por letras para não expor os clientes, com dados até 2026-11-03. Clima do Open-Meteo nas coordenadas de cada planta. Validação temporal com janela expansível, só em leituras válidas.
 
 | Planta | Tipo | Pontos | Modelo ativo | MAE (kWh) | R² | MAE de repetir o dia anterior |
 |---|---|---|---|---|---|---|

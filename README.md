@@ -69,12 +69,13 @@ set -a; . ./.env; set +a
 ./bin/solarguard serve
 ```
 
-Abra `http://127.0.0.1:8080`, crie uma conta e informe o token da Growatt em **Conta**. O token é conferido na Growatt, guardado criptografado no banco e nunca exibido de novo. A coleta começa na hora.
+Abra `http://127.0.0.1:8080`, crie uma conta e informe o token da Growatt em **Conta**. O token precisa ter permissão de API. Ele é conferido na Growatt, guardado criptografado no banco e nunca exibido de novo. A coleta começa sem reiniciar nada, e as primeiras leituras chegam em alguns minutos.
 
 - Cada conta vê só as próprias usinas, e tentar abrir um dado de outra conta responde 404.
 - Uma usina que já está no banco sem dono passa para a conta que salvar um token que a lista. Quem não tem esse token não a vê.
 - As usinas de um token não podem estar em duas contas, para não haver dois coletores nelas.
 - Remover o token para a coleta e mantém os dados.
+- Não há recuperação de senha por e-mail. Para trocar a senha de uma conta, use `solarguard user-reset-password --email pessoa@exemplo.com`.
 
 O `serve` faz tudo em um processo só:
 
@@ -88,9 +89,35 @@ Para buscar o histórico de uma planta, use o nome da fonte mostrado em **Gestã
 ./bin/solarguard backfill --source NOME_DA_FONTE --plant-id 1 --from 2026-01-01 --to 2026-10-31
 ```
 
-A API limita as chamadas por endpoint, então a coleta do histórico é lenta de propósito e continua de onde parou. Os limites observados estão em [docs/GROWATT_API.md](docs/GROWATT_API.md). Reinicie o `serve` depois do `backfill` para ele processar a fila.
+O comando só enfileira as tarefas, e o `serve` em execução as processa sem reiniciar. A API limita as chamadas por endpoint, então a coleta do histórico é lenta de propósito e continua de onde parou. Acompanhe com `solarguard queue --source NOME_DA_FONTE`. Os limites observados estão em [docs/GROWATT_API.md](docs/GROWATT_API.md).
 
 Sem histórico, os alertas de falha já funcionam, mas não há geração esperada: cada modelo precisa de pelo menos 60 dias de leituras válidas.
+
+Para coletar sem o painel, com o token em uma variável de ambiente:
+
+```bash
+./bin/solarguard source-add --name principal --token-env GROWATT_TOKEN
+./bin/solarguard discover --source principal
+./bin/solarguard collect --source principal
+```
+
+O `collect` fica em execução até receber Ctrl+C. Não o rode junto com o `serve` na mesma fonte. Uma fonte criada assim não tem dono: para vê-la no painel, use `source-assign`.
+
+## O painel
+
+| Página | O que faz |
+|---|---|
+| **Usinas** | Resumo de cada usina. Na página da usina, geração medida contra a esperada, leituras com problema e dispositivos. |
+| **Alertas** | Lista com filtros e, em cada alerta, a evidência que o gerou. Permite reconhecer e resolver, com uma nota. |
+| **Relatórios** | Gera relatórios semanais, mensais ou de um período e permite finalizá-los. O gráfico de previsão usa os dados guardados no próprio relatório, que não muda depois de gerado. Rascunhos escritos por IA ficam marcados. |
+| **Gestão** | Nome, fuso e coordenadas das usinas, dados dos dispositivos, regras de alerta, fila de coleta e execução manual do processamento. |
+| **Conta** | Token da Growatt e situação da sincronização. |
+
+As regras de alerta são configuradas por usina em **Gestão**:
+
+- **Sem depender do modelo:** leitura travada, geração zerada, leitura implausível, usina sem geração, dados ausentes, sem dados recentes e sem comunicação.
+- **Precisa de geração esperada:** abaixo do esperado.
+- **Precisa de dois ou mais dispositivos na usina:** divergência entre dispositivos e perda gradual.
 
 ## Uso com uma planilha
 
@@ -104,7 +131,7 @@ Sem histórico, os alertas de falha já funcionam, mas não há geração espera
 ./bin/solarguard serve
 ```
 
-Crie uma conta no painel e entregue a planilha a ela, porque uma fonte sem dono não aparece para ninguém:
+Com o `serve` em execução, crie uma conta no painel e, em outro terminal, entregue a planilha a ela, porque uma fonte sem dono não aparece para ninguém:
 
 ```bash
 ./bin/solarguard source-assign --source planilha --email pessoa@exemplo.com
@@ -161,11 +188,15 @@ make check   # go vet e testes com detector de corrida
 make build
 ```
 
+O teste que chama o servidor de testes da Growatt só roda com `GROWATT_TEST_TOKEN` definido.
+
 | Pasta | Conteúdo |
 |---|---|
 | `cmd/solarguard` | Comandos da linha de comando |
 | `internal/connector` | Conectores de geração e clima |
-| `internal/ingest` | Fila de coleta e agendamento |
+| `internal/fileimport` | Importação de planilhas |
+| `internal/ingest` | Fila de coleta, agendamento e início da coleta por conta |
+| `internal/weather` | Sincronização do clima |
 | `internal/quality` | Classificação das leituras |
 | `internal/forecast` | Modelos, validação temporal e seleção do modelo ativo |
 | `internal/alerts` | Regras de alerta |
