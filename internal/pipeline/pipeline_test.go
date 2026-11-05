@@ -19,6 +19,7 @@ type mockWeatherProvider struct {
 	forecastErr error
 	observed    []connector.WeatherDay
 	forecast    []connector.WeatherDay
+	lastFrom    string
 }
 
 func (m *mockWeatherProvider) Name() string {
@@ -29,6 +30,7 @@ func (m *mockWeatherProvider) Name() string {
 }
 
 func (m *mockWeatherProvider) Observed(ctx context.Context, q connector.WeatherQuery, from, to string) ([]connector.WeatherDay, error) {
+	m.lastFrom = from
 	if m.observedErr != nil {
 		return nil, m.observedErr
 	}
@@ -245,5 +247,50 @@ func TestSchedulerRunsAgainForReadingsCollectedAfterTodaysRun(t *testing.T) {
 	}
 	if got := runCount(); got != 2 {
 		t.Errorf("runs with nothing new: %d, want 2", got)
+	}
+}
+
+// A first run can happen before any reading exists, which puts the weather at
+// yesterday. History collected later still needs its weather, or no model trains.
+func TestObservedWeatherCoversHistoryCollectedAfterFirstRun(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	plant, dev := setupTestPlant(t, st, "Planta", "SP", "America/Sao_Paulo", -23.5, -46.6)
+	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	ghi := 5.0
+	wp := &mockWeatherProvider{observed: []connector.WeatherDay{{Date: "2026-05-09", IrradiationKWhM2: &ghi}}}
+	deps := pipeline.Deps{WeatherProvider: wp, Now: func() time.Time { return now }}
+
+	if _, err := pipeline.RunPlant(ctx, st, plant.ID, deps); err != nil {
+		t.Fatal(err)
+	}
+	if wp.lastFrom != "2026-05-09" {
+		t.Fatalf("no readings yet: asked weather from %q, want yesterday", wp.lastFrom)
+	}
+
+	start, end, err := domain.LocalDay("2026-03-01", plant.Timezone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := 20.0
+	if _, err := st.InsertReadings(ctx, []domain.Reading{{
+		DeviceID: dev.ID, Metric: domain.MetricEnergyKWh, PeriodStart: start, PeriodEnd: end, Value: &v, Quality: domain.QualityUnchecked,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	wp.observed = append(wp.observed, connector.WeatherDay{Date: "2026-03-01", IrradiationKWhM2: &ghi})
+	if _, err := pipeline.RunPlant(ctx, st, plant.ID, deps); err != nil {
+		t.Fatal(err)
+	}
+	if wp.lastFrom != "2026-03-01" {
+		t.Errorf("history collected: asked weather from %q, want the first reading", wp.lastFrom)
+	}
+
+	if _, err := pipeline.RunPlant(ctx, st, plant.ID, deps); err != nil {
+		t.Fatal(err)
+	}
+	if wp.lastFrom != "2026-05-09" {
+		t.Errorf("history covered: asked weather from %q, want only the newest date", wp.lastFrom)
 	}
 }

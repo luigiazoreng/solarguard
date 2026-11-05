@@ -390,3 +390,16 @@ func (s *Store) GetPlantYesterdayStats(ctx context.Context, p domain.Plant, now 
 
 	return stats, nil
 }
+
+// GetPlantOldestWeatherDate returns the earliest date in weather_days for a plant and kind, or "" if none.
+func (s *Store) GetPlantOldestWeatherDate(ctx context.Context, plantID int64, kind string) (string, error) {
+	var minDate sql.NullString
+	err := s.db.QueryRowContext(ctx, `SELECT MIN(wd.date)
+		FROM weather_days wd
+		JOIN plants p ON wd.location_id = p.weather_location_id
+		WHERE p.id = ? AND wd.kind = ?`, plantID, kind).Scan(&minDate)
+	if err != nil {
+		return "", fmt.Errorf("get plant oldest weather date: %w", err)
+	}
+	return minDate.String, nil
+}

@@ -94,17 +94,23 @@ func RunPlant(ctx context.Context, st *store.Store, plantID int64, deps Deps) (*
 			return fmt.Errorf("check newest weather date: %w", err)
 		}
 
+		oldestDate, err := st.GetPlantOldestWeatherDate(ctx, plantID, "observed")
+		if err != nil {
+			return fmt.Errorf("check oldest weather date: %w", err)
+		}
+		firstReading, err := st.GetPlantFirstReadingDate(ctx, plantID)
+		if err != nil {
+			return fmt.Errorf("check first reading date: %w", err)
+		}
+
+		// Readings older than the weather we hold arrive when history is collected
+		// after the first run. Without their weather, no model can train on them.
 		from := newestDate
+		if firstReading != "" && (oldestDate == "" || firstReading < oldestDate) {
+			from = firstReading
+		}
 		if from == "" {
-			firstReading, err := st.GetPlantFirstReadingDate(ctx, plantID)
-			if err != nil {
-				return fmt.Errorf("check first reading date: %w", err)
-			}
-			if firstReading != "" {
-				from = firstReading
-			} else {
-				from = yesterdayStr
-			}
+			from = yesterdayStr
 		}
 
 		if from > yesterdayStr {
