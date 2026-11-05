@@ -13,7 +13,7 @@ Binário Go único que coleta geração de várias plantas, detecta falhas, esti
 5. **Alerta é indício, não diagnóstico.** Todo alerta guarda a evidência que o gerou.
 6. **O LLM não decide nada.** Regras e modelos numéricos geram alertas e previsões. O LLM lê via MCP e só pode salvar rascunho de relatório.
 7. **Conectores só leem.** Nunca implementar endpoints que criem, alterem ou apaguem dados no provedor.
-8. **Sem segredos no repositório.** Tokens ficam em variáveis de ambiente. `testdata` usa dados fictícios: nada de planilha real, identificadores reais ou payload capturado.
+8. **Sem segredos no repositório.** Os tokens das contas ficam criptografados no banco, e a chave fica no ambiente. `testdata` usa dados fictícios: nada de planilha real, identificadores reais ou payload capturado.
 
 ## Módulos
 
@@ -46,7 +46,7 @@ Binário Go único que coleta geração de várias plantas, detecta falhas, esti
 
 ## Convenções
 
-- Código em inglês; documentação e textos da interface em português do Brasil.
+ - Código em inglês; documentação e textos da interface em português do Brasil.
 - Testes escritos antes da implementação, com `go test -race ./...` verde.
 - Novos subcomandos ficam em `cmd/solarguard/cmd_<nome>.go`, registrados por `register` em `init`.
 - Nova migração: próximo número livre em `internal/store/migrations`. Migrações já commitadas não mudam.

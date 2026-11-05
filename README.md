@@ -40,6 +40,8 @@ O modelo ainda não demonstrou ganho estável nas plantas reais: na divisão 80/
 Para subir em uma VPS com Dokploy, siga [docs/DEPLOY.md](docs/DEPLOY.md). Para rodar localmente, é preciso ter Go 1.26 ou superior. Não há dependência de CGO nem de serviço externo de banco: os dados ficam em um arquivo SQLite, e o painel é embutido no binário.
 
 ```bash
+git clone https://github.com/luigiazoreng/solarguard.git
+cd solarguard
 make build
 cp .env.example .env
 chmod 600 .env
