@@ -210,3 +210,7 @@ O teste que chama o servidor de testes da Growatt só roda com `GROWATT_TEST_TOK
 | `ml` | Comparação offline com XGBoost, fora do binário |
 
 As regras de arquitetura estão em [docs/PLANO.md](docs/PLANO.md).
+
+## Licença
+
+[MIT](LICENSE). O htmx e o uPlot, embutidos em `internal/web/static`, mantêm as próprias licenças, nos arquivos ao lado deles.
