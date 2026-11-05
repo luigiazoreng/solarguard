@@ -37,7 +37,7 @@ O modelo ainda não demonstrou ganho estável nas plantas reais: na divisão 80/
 
 ## Instalação
 
-É preciso ter Go 1.26 ou superior. Não há dependência de CGO nem de serviço externo de banco: os dados ficam em um arquivo SQLite, e o painel é embutido no binário.
+Para subir em uma VPS com Dokploy, siga [docs/DEPLOY.md](docs/DEPLOY.md). Para rodar localmente, é preciso ter Go 1.26 ou superior. Não há dependência de CGO nem de serviço externo de banco: os dados ficam em um arquivo SQLite, e o painel é embutido no binário.
 
 ```bash
 make build
@@ -58,6 +58,7 @@ set -a; . ./.env; set +a
 | `SOLARGUARD_ADDR` | Endereço do painel. Padrão: `127.0.0.1:8080`. |
 | `SOLARGUARD_ADMIN_PASSWORD` | Senha do painel. Obrigatória fora de `127.0.0.1`. |
 | `SOLARGUARD_MCP_TOKEN` | Liga o MCP em `/mcp`. Sem ela, a rota responde 404. |
+| `SOLARGUARD_TRUST_PROXY` | Use `true` só quando a porta for alcançável apenas pelo proxy reverso. Faz o bloqueio de senha valer por cliente. |
 
 ## Uso com a Growatt
 
@@ -132,7 +133,7 @@ Pela rede, com o `serve` em execução e `SOLARGUARD_MCP_TOKEN` definido, use `h
 
 ## Segurança
 
-- Sem `SOLARGUARD_ADMIN_PASSWORD`, o painel só inicia em endereço local e recusa requisições com outro `Host`. Para expor além da máquina, defina a senha e use HTTPS em um proxy reverso.
+- Sem `SOLARGUARD_ADMIN_PASSWORD`, o painel só inicia em endereço local e recusa requisições com outro `Host`. Para expor além da máquina, defina a senha e use HTTPS em um proxy reverso, como em [docs/DEPLOY.md](docs/DEPLOY.md).
 - O painel usa proteção CSRF, CSP sem scripts inline e bloqueio após 5 senhas erradas.
 - Nunca versione `.env`, `data/`, planilhas ou respostas brutas da API: eles já estão no `.gitignore`.
 

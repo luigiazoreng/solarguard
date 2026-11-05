@@ -49,6 +49,7 @@ func runServe(ctx context.Context, args []string) error {
 		Addr:          *addr,
 		AdminPassword: adminPassword,
 		MCPToken:      mcpToken,
+		TrustProxy:    os.Getenv("SOLARGUARD_TRUST_PROXY") == "true",
 		Store:         st,
 		Logger:        logger,
 	}

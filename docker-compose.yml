@@ -1,0 +1,30 @@
+services:
+  solarguard:
+    build: .
+    restart: unless-stopped
+    # O cadastro da fonte é idempotente. O nome precisa ser sempre o mesmo, para não
+    # criar um segundo coletor com o mesmo token.
+    command:
+      - sh
+      - -c
+      - solarguard source-add --name growatt-principal --token-env GROWATT_TOKEN && exec solarguard serve
+    environment:
+      GROWATT_TOKEN: ${GROWATT_TOKEN:?defina GROWATT_TOKEN}
+      SOLARGUARD_ADMIN_PASSWORD: ${SOLARGUARD_ADMIN_PASSWORD:?defina SOLARGUARD_ADMIN_PASSWORD}
+      SOLARGUARD_MCP_TOKEN: ${SOLARGUARD_MCP_TOKEN:-}
+      # A porta só é alcançável pelo proxy reverso. Não publique com "ports".
+      SOLARGUARD_TRUST_PROXY: "true"
+    expose:
+      - "8080"
+    volumes:
+      - solarguard-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/login"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+# O banco é um arquivo SQLite dentro deste volume: não há container de banco.
+volumes:
+  solarguard-data:

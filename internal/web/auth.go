@@ -175,6 +175,27 @@ func extractIP(remoteAddr string) string {
 	return host
 }
 
+// ClientIP returns the address used to count failed logins. X-Forwarded-For is
+// trusted only from a loopback peer, or from any peer when trustProxy says the
+// port is reachable only through the reverse proxy. Only its last entry counts,
+// because that is the one the proxy appended.
+func ClientIP(r *http.Request, trustProxy bool) string {
+	peer := extractIP(r.RemoteAddr)
+	if !trustProxy && !IsLoopback(peer) {
+		return peer
+	}
+	forwarded := r.Header.Values("X-Forwarded-For")
+	if len(forwarded) == 0 {
+		return peer
+	}
+	entries := strings.Split(forwarded[len(forwarded)-1], ",")
+	last := strings.TrimSpace(entries[len(entries)-1])
+	if net.ParseIP(last) == nil {
+		return peer
+	}
+	return last
+}
+
 // IsLoopback checks whether addr (or host part) represents a loopback address.
 func IsLoopback(addr string) bool {
 	host, _, err := net.SplitHostPort(addr)

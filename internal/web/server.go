@@ -33,6 +33,7 @@ type Config struct {
 	Addr          string
 	AdminPassword string
 	MCPToken      string
+	TrustProxy    bool // the port is reachable only through a reverse proxy
 	Store         *store.Store
 	Logger        *slog.Logger
 	Now           func() time.Time
@@ -401,9 +402,8 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	password := r.PostFormValue("password")
-	remoteIP := r.RemoteAddr
 
-	sess, err := s.sm.Authenticate(password, remoteIP)
+	sess, err := s.sm.Authenticate(password, ClientIP(r, s.cfg.TrustProxy))
 	if errors.Is(err, ErrTooManyRequests) {
 		w.WriteHeader(http.StatusTooManyRequests)
 		_ = s.render(w, "login", map[string]any{
