@@ -107,26 +107,15 @@ func RenderMarkdown(input string) template.HTML {
 
 		// Table detection
 		if strings.Contains(trimmed, "|") && i+1 < n && isTableSeparator(lines[i+1]) {
-			out.WriteString("<table>\n<thead>\n<tr>")
 			headers := splitTableCells(trimmed)
-			for _, h := range headers {
-				escapedHeader := html.EscapeString(h)
-				out.WriteString("<th>" + renderInlines(escapedHeader) + "</th>")
-			}
-			out.WriteString("</tr>\n</thead>\n<tbody>\n")
+			var rows [][]string
 
 			i += 2 // skip header and separator
 			for i < n && strings.Contains(lines[i], "|") && strings.TrimSpace(lines[i]) != "" {
-				rowCells := splitTableCells(lines[i])
-				out.WriteString("<tr>")
-				for _, c := range rowCells {
-					escapedCell := html.EscapeString(c)
-					out.WriteString("<td>" + renderInlines(escapedCell) + "</td>")
-				}
-				out.WriteString("</tr>\n")
+				rows = append(rows, splitTableCells(lines[i]))
 				i++
 			}
-			out.WriteString("</tbody>\n</table>\n")
+			out.WriteString(renderTable(headers, rows))
 			continue
 		}
 
@@ -218,4 +207,117 @@ func RenderMarkdown(input string) template.HTML {
 	}
 
 	return template.HTML(out.String())
+}
+
+var numericCellRegex = regexp.MustCompile(`^[+\-−]?\d[\d.]*(,\d+)?(\s*(kWh|MWh|Wh|kW|W|%))?$`)
+
+// isPlaceholderCell reports whether a cell stands for "no value".
+func isPlaceholderCell(c string) bool {
+	switch c {
+	case "", "-", "—", "–", "N/A":
+		return true
+	}
+	return false
+}
+
+// numericColumns marks the columns whose every non-placeholder cell is a
+// pt-BR number, optionally with a unit. Those columns are right-aligned.
+func numericColumns(headers []string, rows [][]string) []bool {
+	cols := make([]bool, len(headers))
+	for c := range headers {
+		seen := false
+		ok := true
+		for _, row := range rows {
+			if c >= len(row) {
+				continue
+			}
+			cell := row[c]
+			if isPlaceholderCell(cell) {
+				continue
+			}
+			if !numericCellRegex.MatchString(cell) {
+				ok = false
+				break
+			}
+			seen = true
+		}
+		cols[c] = ok && seen
+	}
+	return cols
+}
+
+// badgeClass maps the severity and status labels written by the report
+// generator to the badge classes in style.css. Only used in columns whose
+// header is "Severidade" or "Status".
+func badgeClass(header, cell string) string {
+	switch strings.ToLower(header) {
+	case "severidade":
+		switch cell {
+		case "crítico":
+			return "badge-critical"
+		case "aviso":
+			return "badge-warning"
+		case "informativo":
+			return "badge-info"
+		}
+	case "status":
+		switch cell {
+		case "aberto":
+			return "badge-warning"
+		case "reconhecido":
+			return "badge-info"
+		case "resolvido":
+			return "badge-success"
+		}
+	}
+	return ""
+}
+
+// renderTable writes a table wrapped in the same container the other screens
+// use. Cells are escaped before any inline formatting. Columns of numbers are
+// right-aligned, severity and status labels become badges and long text cells
+// are allowed to wrap.
+func renderTable(headers []string, rows [][]string) string {
+	numeric := numericColumns(headers, rows)
+	var b strings.Builder
+	b.WriteString("<div class=\"table-container\">\n<table>\n<thead>\n<tr>")
+	for c, h := range headers {
+		cls := ""
+		if numeric[c] {
+			cls = ` class="num"`
+		}
+		b.WriteString("<th" + cls + ">" + renderInlines(html.EscapeString(h)) + "</th>")
+	}
+	b.WriteString("</tr>\n</thead>\n<tbody>\n")
+	for _, row := range rows {
+		rowClass := ""
+		for c, cell := range row {
+			if c < len(headers) && strings.EqualFold(headers[c], "severidade") && cell == "crítico" {
+				rowClass = ` class="row-critical"`
+			}
+		}
+		b.WriteString("<tr" + rowClass + ">")
+		for c, cell := range row {
+			header := ""
+			if c < len(headers) {
+				header = headers[c]
+			}
+			escaped := renderInlines(html.EscapeString(cell))
+			if bc := badgeClass(header, cell); bc != "" {
+				b.WriteString("<td><span class=\"badge " + bc + "\">" + escaped + "</span></td>")
+				continue
+			}
+			cls := ""
+			switch {
+			case c < len(numeric) && numeric[c]:
+				cls = ` class="num"`
+			case len([]rune(cell)) > 40:
+				cls = ` class="cell-text"`
+			}
+			b.WriteString("<td" + cls + ">" + escaped + "</td>")
+		}
+		b.WriteString("</tr>\n")
+	}
+	b.WriteString("</tbody>\n</table>\n</div>\n")
+	return b.String()
 }

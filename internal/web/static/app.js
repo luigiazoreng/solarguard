@@ -21,6 +21,13 @@ document.addEventListener("DOMContentLoaded", function () {
   if (chartEl && window.uPlot) {
     initPlantChart(chartEl);
   }
+
+  // 3. Forecast chart of a report (section 5). Data is the report's own
+  // stored snapshot, served in a non-executing JSON block.
+  const reportChartEl = document.getElementById("report-forecast-chart");
+  if (reportChartEl && window.uPlot) {
+    initReportForecastChart(reportChartEl);
+  }
 });
 
 function initPlantChart(container) {
@@ -253,6 +260,106 @@ function populateFallbackTable(data) {
       <td><span class="badge badge-info">Previsão: ${val} kWh</span></td>
     `;
     tbody.appendChild(tr);
+  });
+}
+
+// Forecast of a report: expected kWh per day with the 90% band when the
+// report has it. Reads #report-forecast-data, never fetches anything.
+function initReportForecastChart(container) {
+  const dataEl = document.getElementById("report-forecast-data");
+  if (!dataEl) return;
+
+  let fc;
+  try {
+    fc = JSON.parse(dataEl.textContent);
+  } catch (e) {
+    return;
+  }
+  if (!fc || !Array.isArray(fc.dates) || fc.dates.length === 0 || !Array.isArray(fc.expected)) return;
+
+  const xVals = fc.dates.map((d) => {
+    const p = d.split("-").map(Number);
+    return Math.floor(Date.UTC(p[0], p[1] - 1, p[2]) / 1000);
+  });
+  const num = (v) => (typeof v === "number" ? v : null);
+  const expected = fc.expected.map(num);
+  const lower = (fc.lower || []).map(num);
+  const upper = (fc.upper || []).map(num);
+  const hasBand = !!fc.has_band && lower.length === xVals.length && upper.length === xVals.length;
+
+  const textColor = "#637282";
+  const gridColor = "#dce4ea";
+  const lineColor = "#e58b20";
+  const fmt = (v) => (v == null ? "-" : v.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " kWh");
+  const fmtDay = (ts) => {
+    const d = new Date(ts * 1000);
+    return String(d.getUTCDate()).padStart(2, "0") + "/" + String(d.getUTCMonth() + 1).padStart(2, "0");
+  };
+  const heightFor = () => (window.innerWidth < 600 ? 260 : 320);
+
+  const data = [xVals, expected];
+  const series = [
+    { label: "Data", value: (u, ts) => (ts == null ? "-" : fmtDay(ts)) },
+    {
+      label: "Previsão (kWh/dia)",
+      stroke: lineColor,
+      width: 2,
+      dash: [6, 3],
+      points: { show: true, size: 7, fill: lineColor, stroke: "#fff", width: 1 },
+      value: (u, v) => fmt(v),
+    },
+  ];
+  const opts = {
+    width: container.clientWidth || 700,
+    height: heightFor(),
+    scales: {
+      x: {
+        time: true,
+        range: (u, min, max) => (min === max ? [min - 86400, max + 86400] : [min, max]),
+      },
+      // Zero baseline, so the size of the values is not exaggerated.
+      y: { range: (u, min, max) => [0, Math.max(max * 1.1, 1)] },
+    },
+    axes: [
+      {
+        stroke: textColor,
+        grid: { stroke: gridColor, width: 1 },
+        ticks: { stroke: gridColor },
+        // One tick per day, thinned out when the plot is narrow.
+        splits: (u) => {
+          const maxLabels = Math.max(2, Math.floor((u.bbox.width / (window.devicePixelRatio || 1)) / 56));
+          const step = Math.ceil(xVals.length / maxLabels);
+          return xVals.filter((v, i) => i % step === 0);
+        },
+        values: (u, splits) => splits.map(fmtDay),
+        space: 50,
+      },
+      {
+        stroke: textColor,
+        grid: { stroke: gridColor, width: 1 },
+        ticks: { stroke: gridColor },
+        label: "kWh por dia",
+        labelSize: 18,
+        size: 64,
+        values: (u, vals) => vals.map((v) => v.toLocaleString("pt-BR")),
+      },
+    ],
+    series: series,
+  };
+
+  if (hasBand) {
+    data.push(lower, upper);
+    series.push(
+      { label: "Limite inferior (90%)", stroke: "rgba(229, 139, 32, 0.35)", width: 1, value: (u, v) => fmt(v) },
+      { label: "Limite superior (90%)", stroke: "rgba(229, 139, 32, 0.35)", width: 1, value: (u, v) => fmt(v) }
+    );
+    opts.bands = [{ series: [3, 2], fill: "rgba(229, 139, 32, 0.16)" }];
+  }
+
+  container.innerHTML = "";
+  const plot = new uPlot(opts, data, container);
+  window.addEventListener("resize", () => {
+    plot.setSize({ width: container.clientWidth, height: heightFor() });
   });
 }
 
