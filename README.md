@@ -83,7 +83,9 @@ Para buscar o histórico de uma planta (os IDs aparecem no endereço da página 
 ./bin/solarguard collect --source principal
 ```
 
-A API limita as chamadas por endpoint, então a coleta do histórico é lenta de propósito e continua de onde parou. Os limites observados estão em [docs/GROWATT_API.md](docs/GROWATT_API.md). O `collect` fica em execução até receber Ctrl+C.
+A API limita as chamadas por endpoint, então a coleta do histórico é lenta de propósito e continua de onde parou. Os limites observados estão em [docs/GROWATT_API.md](docs/GROWATT_API.md). O `collect` fica em execução até receber Ctrl+C. Pare o `serve` antes de rodar o `collect`, para não haver dois coletores na mesma fonte. O `serve` também processa a fila, então basta reiniciá-lo depois do `backfill` se preferir.
+
+Sem histórico, os alertas de falha já funcionam, mas não há geração esperada: cada modelo precisa de pelo menos 60 dias de leituras válidas.
 
 ## Uso com uma planilha
 
