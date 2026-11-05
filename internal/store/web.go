@@ -70,14 +70,25 @@ func (s *Store) HasUncheckedReadings(ctx context.Context, plantID int64) (bool, 
 
 // ListPipelineRuns returns the most recent pipeline runs.
 func (s *Store) ListPipelineRuns(ctx context.Context, plantID *int64, limit int) ([]PipelineRun, error) {
-	if limit <= 0 {
-		limit = 20
-	}
 	q := `SELECT id, plant_id, local_date, status, steps_json, started_at, finished_at FROM pipeline_runs`
 	var args []any
 	if plantID != nil {
 		q += ` WHERE plant_id = ?`
 		args = append(args, *plantID)
+	}
+	return s.queryPipelineRuns(ctx, q, args, limit)
+}
+
+// ListPipelineRunsForUser returns the latest runs of one account's plants.
+func (s *Store) ListPipelineRunsForUser(ctx context.Context, userID int64, limit int) ([]PipelineRun, error) {
+	q := `SELECT id, plant_id, local_date, status, steps_json, started_at, finished_at FROM pipeline_runs
+		WHERE plant_id IN ` + ownedPlantIDs
+	return s.queryPipelineRuns(ctx, q, []any{userID}, limit)
+}
+
+func (s *Store) queryPipelineRuns(ctx context.Context, q string, args []any, limit int) ([]PipelineRun, error) {
+	if limit <= 0 {
+		limit = 20
 	}
 	q += ` ORDER BY started_at DESC, id DESC LIMIT ?`
 	args = append(args, limit)

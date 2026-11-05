@@ -74,7 +74,7 @@ func (s *Server) handlePlantDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	plant, err := s.store.GetPlant(ctx, plantID)
+	plant, err := s.userPlant(r, plantID)
 	if errors.Is(err, store.ErrNotFound) {
 		http.NotFound(w, r)
 		return
@@ -340,7 +340,7 @@ func (s *Server) handlePlantSeries(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	plant, err := s.store.GetPlant(ctx, plantID)
+	plant, err := s.userPlant(r, plantID)
 	if errors.Is(err, store.ErrNotFound) {
 		http.NotFound(w, r)
 		return

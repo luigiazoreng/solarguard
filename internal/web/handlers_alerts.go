@@ -79,6 +79,8 @@ func (s *Server) handleAlertsList(w http.ResponseWriter, r *http.Request) {
 	filter.Limit = pageSize + 1
 	filter.Offset = (page - 1) * pageSize
 
+	userID := sessionUserID(r)
+	filter.UserID = &userID
 	alerts, err := s.store.ListAlerts(ctx, filter)
 	if err != nil {
 		s.cfg.Logger.Error("list alerts", "err", err)
@@ -92,7 +94,7 @@ func (s *Server) handleAlertsList(w http.ResponseWriter, r *http.Request) {
 		alerts = alerts[:pageSize]
 	}
 
-	plants, _ := s.store.ListPlants(ctx)
+	plants, _ := s.store.ListPlantsForUser(ctx, userID)
 	plantMap := make(map[int64]domain.Plant)
 	for _, p := range plants {
 		plantMap[p.ID] = p
@@ -145,7 +147,7 @@ func (s *Server) handleAlertDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	alert, err := s.store.GetAlert(ctx, alertID)
+	alert, err := s.userAlert(r, alertID)
 	if errors.Is(err, store.ErrNotFound) {
 		http.NotFound(w, r)
 		return
@@ -302,6 +304,11 @@ func (s *Server) handleAlertAck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if _, err := s.userAlert(r, alertID); err != nil {
+		s.notFoundOrError(w, r, err)
+		return
+	}
+
 	note := r.PostFormValue("note")
 	if err := s.store.AckAlert(ctx, alertID, note); err != nil {
 		s.cfg.Logger.Error("ack alert", "id", alertID, "err", err)
@@ -318,6 +325,11 @@ func (s *Server) handleAlertResolve(w http.ResponseWriter, r *http.Request) {
 	alertID, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
 		http.NotFound(w, r)
+		return
+	}
+
+	if _, err := s.userAlert(r, alertID); err != nil {
+		s.notFoundOrError(w, r, err)
 		return
 	}
 

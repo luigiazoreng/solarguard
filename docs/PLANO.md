@@ -46,7 +46,6 @@ Binário Go único que coleta geração de várias plantas, detecta falhas, esti
 
 ## Convenções
 
-- Commits **sem** `Co-Authored-By` nem outra atribuição de coautoria.
 - Código em inglês; documentação e textos da interface em português do Brasil.
 - Testes escritos antes da implementação, com `go test -race ./...` verde.
 - Novos subcomandos ficam em `cmd/solarguard/cmd_<nome>.go`, registrados por `register` em `init`.

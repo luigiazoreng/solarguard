@@ -15,7 +15,7 @@ func TestManagePlantNameCorrection(t *testing.T) {
 	st := newWebTestStore(t)
 	p, _, _ := seedPlantWithDevices(t, st, "NAME", "Usina Exempl�")
 	seedPlantWithDevices(t, st, "CLEAN", "Usina Exemplo")
-	ts := startServer(t, st, "", time.Date(2026, 5, 2, 12, 0, 0, 0, time.UTC))
+	ts := startServer(t, st, time.Date(2026, 5, 2, 12, 0, 0, 0, time.UTC))
 	client, token := sessionClient(t, ts.URL)
 	const note = "Nome corrompido pela origem. Corrija aqui."
 	body := getBody(t, ts.URL+"/manage")

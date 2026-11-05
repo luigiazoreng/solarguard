@@ -16,18 +16,17 @@ import (
 	"github.com/luigiazoreng/solarguard/internal/web"
 )
 
-func startServer(t *testing.T, st *store.Store, password string, now time.Time) *httptest.Server {
+// startServer serves the panel as if an account that owns every source were logged in.
+func startServer(t *testing.T, st *store.Store, now time.Time) *httptest.Server {
 	t.Helper()
 	srv, err := web.NewServer(web.Config{
-		Addr:          "127.0.0.1:8080",
-		AdminPassword: password,
-		Store:         st,
-		Now:           func() time.Time { return now },
+		Store: st,
+		Now:   func() time.Time { return now },
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	ts := httptest.NewServer(srv.Handler())
+	ts := ownerServer(t, st, srv)
 	t.Cleanup(ts.Close)
 	return ts
 }
@@ -108,60 +107,21 @@ func TestPOST_WithTokenFromRenderedPage(t *testing.T) {
 		return resp.StatusCode
 	}
 
-	t.Run("loopback without password", func(t *testing.T) {
-		ts := startServer(t, st, "", now)
-		client, token := sessionClient(t, ts.URL)
-		alert := saveAlert("loopback")
-		target := fmt.Sprintf("%s/alerts/%d/ack", ts.URL, alert.ID)
+	ts := startServer(t, st, now)
+	client, token := sessionClient(t, ts.URL)
+	alert := saveAlert("ack")
+	target := fmt.Sprintf("%s/alerts/%d/ack", ts.URL, alert.ID)
 
-		if code := post(client, target, url.Values{"csrf_token": {"wrong"}}, ts.URL); code != http.StatusForbidden {
-			t.Errorf("wrong token: status %d, want 403", code)
-		}
-		if code := post(client, target, url.Values{"csrf_token": {token}, "note": {"visto"}}, ts.URL); code != http.StatusSeeOther {
-			t.Errorf("rendered token: status %d, want 303", code)
-		}
-		got, err := st.GetAlert(context.Background(), alert.ID)
-		if err != nil || got.Status != "ack" {
-			t.Errorf("alert status %q (err %v), want ack", got.Status, err)
-		}
-	})
-
-	t.Run("with password", func(t *testing.T) {
-		ts := startServer(t, st, "segredo", now)
-		alert := saveAlert("password")
-		target := fmt.Sprintf("%s/alerts/%d/ack", ts.URL, alert.ID)
-
-		anonymous := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-		if code := post(anonymous, target, url.Values{"csrf_token": {"x"}}, ts.URL); code != http.StatusFound {
-			t.Errorf("no session: status %d, want redirect to login", code)
-		}
-
-		client := sessionClientAfterLogin(t, ts.URL, "segredo")
-		token := pageCSRFToken(t, client, ts.URL)
-		if code := post(client, target, url.Values{"csrf_token": {token}}, ts.URL); code != http.StatusSeeOther {
-			t.Errorf("rendered token: status %d, want 303", code)
-		}
-		if code := post(client, ts.URL+"/logout", url.Values{"csrf_token": {token}}, ts.URL); code != http.StatusSeeOther {
-			t.Errorf("logout: status %d, want 303", code)
-		}
-	})
-}
-
-func sessionClientAfterLogin(t *testing.T, baseURL, password string) *http.Client {
-	t.Helper()
-	client, err := newJarClient()
-	if err != nil {
-		t.Fatal(err)
+	if code := post(client, target, url.Values{"csrf_token": {"wrong"}}, ts.URL); code != http.StatusForbidden {
+		t.Errorf("wrong token: status %d, want 403", code)
 	}
-	resp, err := client.PostForm(baseURL+"/login", url.Values{"password": {password}})
-	if err != nil {
-		t.Fatal(err)
+	if code := post(client, target, url.Values{"csrf_token": {token}, "note": {"visto"}}, ts.URL); code != http.StatusSeeOther {
+		t.Errorf("rendered token: status %d, want 303", code)
 	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusSeeOther {
-		t.Fatalf("login: status %d", resp.StatusCode)
+	got, err := st.GetAlert(context.Background(), alert.ID)
+	if err != nil || got.Status != "ack" {
+		t.Errorf("alert status %q (err %v), want ack", got.Status, err)
 	}
-	return client
 }
 
 // Hand-computed: only plant C has both values yesterday, 110 against 100, so +10,0%.
@@ -184,7 +144,7 @@ func TestOverview_DeviationPairsOnlyPlantsWithBothValues(t *testing.T) {
 	dayReading(t, st, pC, c1.ID, yesterday, 110, domain.QualityOK)
 	dayExpected(t, st, pC.ID, c1.ID, yesterday, 100)
 
-	body := getBody(t, startServer(t, st, "", now).URL+"/")
+	body := getBody(t, startServer(t, st, now).URL+"/")
 
 	if !strings.Contains(body, "+10,0%") {
 		t.Errorf("expected the paired deviation +10,0%%")
@@ -228,7 +188,7 @@ func TestAlertDetail_OfflineCountsElapsedDays(t *testing.T) {
 			if err := st.SaveAlert(ctx, &alert); err != nil {
 				t.Fatal(err)
 			}
-			body := getBody(t, fmt.Sprintf("%s/alerts/%d", startServer(t, st, "", now).URL, alert.ID))
+			body := getBody(t, fmt.Sprintf("%s/alerts/%d", startServer(t, st, now).URL, alert.ID))
 			if !strings.Contains(body, tc.want) {
 				t.Errorf("expected %q", tc.want)
 			}
@@ -245,7 +205,7 @@ func TestPlant_DeviceFilterAppliesToLostEnergy(t *testing.T) {
 	dayExpected(t, st, plant.ID, d1.ID, date, 26)
 	dayExpected(t, st, plant.ID, d2.ID, date, 37.5) // d2 has no reading
 
-	ts := startServer(t, st, "", now)
+	ts := startServer(t, st, now)
 	base := fmt.Sprintf("%s/plants/%d?period=7", ts.URL, plant.ID)
 	if body := getBody(t, base); !strings.Contains(body, "37,5") {
 		t.Errorf("whole plant should show 37,5 kWh expected without measurement")
@@ -264,7 +224,7 @@ func TestPlant_PeriodWithoutReadingsIsNotShownAsZero(t *testing.T) {
 	plant, d1, _ := seedPlantWithDevices(t, st, "P", "Usina")
 	dayReading(t, st, plant, d1.ID, "2026-04-01", 25, domain.QualityOK)
 
-	ts := startServer(t, st, "", now)
+	ts := startServer(t, st, now)
 	body := getBody(t, fmt.Sprintf("%s/plants/%d?period=7", ts.URL, plant.ID))
 	if !strings.Contains(body, "sem leituras no período") {
 		t.Errorf("expected the empty period message")
@@ -280,7 +240,7 @@ func TestPlant_PeriodWithoutReadingsIsNotShownAsZero(t *testing.T) {
 func TestSeries_RejectsRangeAboveLimit(t *testing.T) {
 	st := newWebTestStore(t)
 	plant, _, _ := seedPlantWithDevices(t, st, "P", "Usina")
-	ts := startServer(t, st, "", time.Date(2026, 5, 3, 15, 0, 0, 0, time.UTC))
+	ts := startServer(t, st, time.Date(2026, 5, 3, 15, 0, 0, 0, time.UTC))
 	resp, err := http.Get(fmt.Sprintf("%s/api/v1/plants/%d/series?from=0001-01-01&to=2026-05-01", ts.URL, plant.ID))
 	if err != nil {
 		t.Fatal(err)
@@ -305,7 +265,7 @@ func TestPlant_ModelErrorAndDeviceStatusAreShownCorrectly(t *testing.T) {
 	}
 	dayReading(t, st, plant, d1.ID, "2026-05-01", 25, domain.QualityOK)
 
-	body := getBody(t, fmt.Sprintf("%s/plants/%d", startServer(t, st, "", time.Date(2026, 5, 3, 15, 0, 0, 0, time.UTC)).URL, plant.ID))
+	body := getBody(t, fmt.Sprintf("%s/plants/%d", startServer(t, st, time.Date(2026, 5, 3, 15, 0, 0, 0, time.UTC)).URL, plant.ID))
 	if !strings.Contains(body, "13,7%") {
 		t.Errorf("WAPE is stored as a fraction and must show as 13,7%%")
 	}

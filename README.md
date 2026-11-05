@@ -37,7 +37,7 @@ O modelo ainda não demonstrou ganho estável nas plantas reais: na divisão 80/
 
 ## Instalação
 
-É preciso ter Go 1.26 ou superior. Não há dependência de CGO nem de serviço externo de banco: os dados ficam em um arquivo SQLite, e o painel é embutido no binário.
+Para subir em uma VPS com Dokploy, siga [docs/DEPLOY.md](docs/DEPLOY.md). Para rodar localmente, é preciso ter Go 1.26 ou superior. Não há dependência de CGO nem de serviço externo de banco: os dados ficam em um arquivo SQLite, e o painel é embutido no binário.
 
 ```bash
 make build
@@ -45,7 +45,7 @@ cp .env.example .env
 chmod 600 .env
 ```
 
-Preencha o `.env` e carregue as variáveis no terminal, porque o binário lê apenas o ambiente:
+Gere a chave com `openssl rand -base64 32`, preencha o `.env` e carregue as variáveis no terminal, porque o binário lê apenas o ambiente:
 
 ```bash
 set -a; . ./.env; set +a
@@ -53,37 +53,39 @@ set -a; . ./.env; set +a
 
 | Variável | Para que serve |
 |---|---|
-| `GROWATT_TOKEN` | Token da API Growatt. Fica só no ambiente: o banco guarda apenas o nome da variável. |
+| `SOLARGUARD_SECRET_KEY` | Obrigatória. Criptografa os tokens salvos pelas contas. Se mudar, cada conta informa o token de novo. |
 | `SOLARGUARD_DB` | Caminho do banco. Padrão: `./data/solarguard.db`. |
 | `SOLARGUARD_ADDR` | Endereço do painel. Padrão: `127.0.0.1:8080`. |
-| `SOLARGUARD_ADMIN_PASSWORD` | Senha do painel. Obrigatória fora de `127.0.0.1`. |
-| `SOLARGUARD_MCP_TOKEN` | Liga o MCP em `/mcp`. Sem ela, a rota responde 404. |
+| `SOLARGUARD_MCP_TOKEN` | Liga o MCP em `/mcp`, com acesso a todas as contas. Sem ela, a rota responde 404. |
+| `SOLARGUARD_TRUST_PROXY` | Use `true` só quando a porta for alcançável apenas pelo proxy reverso. Faz o bloqueio de senha valer por cliente. |
+| `SOLARGUARD_GROWATT_BASE_URL` | Endereço da API da Growatt para novos tokens. Padrão: `https://openapi.growatt.com`. |
 
-## Uso com a Growatt
+## Contas e Growatt
 
 ```bash
-./bin/solarguard migrate
-./bin/solarguard source-add --name principal --token-env GROWATT_TOKEN
 ./bin/solarguard serve
 ```
 
-Abra `http://127.0.0.1:8080`. O `serve` faz tudo em um processo só:
+Abra `http://127.0.0.1:8080`, crie uma conta e informe o token da Growatt em **Conta**. O token é conferido na Growatt, guardado criptografado no banco e nunca exibido de novo. A coleta começa na hora.
 
-- descobre as plantas e os dispositivos ao iniciar;
-- a cada 15 minutos, agenda a coleta dos dias já encerrados, recuperando até 7 dias de atraso;
+- Cada conta vê só as próprias usinas, e tentar abrir um dado de outra conta responde 404.
+- Uma usina que já está no banco sem dono passa para a conta que salvar um token que a lista. Quem não tem esse token não a vê.
+- As usinas de um token não podem estar em duas contas, para não haver dois coletores nelas.
+- Remover o token para a coleta e mantém os dados.
+
+O `serve` faz tudo em um processo só:
+
+- a cada 15 minutos, agenda a coleta dos dias já encerrados de cada conta com token, recuperando até 7 dias de atraso;
 - uma vez por dia, depois das 02:00 no fuso de cada planta, roda clima, qualidade, modelos e alertas;
 - roda essa sequência de novo quando chegam leituras depois da execução do dia.
 
-Cadastre as fontes antes de iniciar: o `serve` só as lê ao abrir.
-
-Para buscar o histórico de uma planta (os IDs aparecem no endereço da página da planta):
+Para buscar o histórico de uma planta, use o nome da fonte mostrado em **Gestão** e o ID que aparece no endereço da página da planta:
 
 ```bash
-./bin/solarguard backfill --source principal --plant-id 1 --from 2026-01-01 --to 2026-10-31
-./bin/solarguard collect --source principal
+./bin/solarguard backfill --source NOME_DA_FONTE --plant-id 1 --from 2026-01-01 --to 2026-10-31
 ```
 
-A API limita as chamadas por endpoint, então a coleta do histórico é lenta de propósito e continua de onde parou. Os limites observados estão em [docs/GROWATT_API.md](docs/GROWATT_API.md). O `collect` fica em execução até receber Ctrl+C. Pare o `serve` antes de rodar o `collect`, para não haver dois coletores na mesma fonte. O `serve` também processa a fila, então basta reiniciá-lo depois do `backfill` se preferir.
+A API limita as chamadas por endpoint, então a coleta do histórico é lenta de propósito e continua de onde parou. Os limites observados estão em [docs/GROWATT_API.md](docs/GROWATT_API.md). Reinicie o `serve` depois do `backfill` para ele processar a fila.
 
 Sem histórico, os alertas de falha já funcionam, mas não há geração esperada: cada modelo precisa de pelo menos 60 dias de leituras válidas.
 
@@ -97,6 +99,12 @@ Sem histórico, os alertas de falha já funcionam, mas não há geração espera
 ./bin/solarguard pipeline --plant-id 1
 ./bin/solarguard report --plant-id 1 --kind monthly --from 2026-09-01 --to 2026-09-30
 ./bin/solarguard serve
+```
+
+Crie uma conta no painel e entregue a planilha a ela, porque uma fonte sem dono não aparece para ninguém:
+
+```bash
+./bin/solarguard source-assign --source planilha --email pessoa@exemplo.com
 ```
 
 As armadilhas do formato (unidades misturadas e carimbo com um dia de atraso) estão em [docs/DADOS.md](docs/DADOS.md). A planilha do projeto não está no repositório, porque contém dados de um cliente.
@@ -130,9 +138,12 @@ Na própria máquina, por stdio:
 
 Pela rede, com o `serve` em execução e `SOLARGUARD_MCP_TOKEN` definido, use `http://127.0.0.1:8080/mcp` com o cabeçalho `Authorization: Bearer <token>`.
 
+O MCP é para quem administra o servidor: tanto por stdio quanto pela rede, ele lê os dados de todas as contas.
+
 ## Segurança
 
-- Sem `SOLARGUARD_ADMIN_PASSWORD`, o painel só inicia em endereço local e recusa requisições com outro `Host`. Para expor além da máquina, defina a senha e use HTTPS em um proxy reverso.
+- As senhas são guardadas com bcrypt, e os tokens com AES-256-GCM, usando uma chave que fica fora do banco.
+- O painel exige login sempre. Para expor além da máquina, use HTTPS em um proxy reverso, como em [docs/DEPLOY.md](docs/DEPLOY.md).
 - O painel usa proteção CSRF, CSP sem scripts inline e bloqueio após 5 senhas erradas.
 - Nunca versione `.env`, `data/`, planilhas ou respostas brutas da API: eles já estão no `.gitignore`.
 
@@ -161,6 +172,7 @@ make build
 | `internal/pipeline` | Sequência diária por planta |
 | `internal/web` | Painel |
 | `internal/store` | SQLite e migrações |
+| `internal/secrets` | Criptografia dos tokens |
 | `ml` | Comparação offline com XGBoost, fora do binário |
 
 As regras de arquitetura estão em [docs/PLANO.md](docs/PLANO.md).

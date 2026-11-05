@@ -3,16 +3,17 @@ package web
 import (
 	"context"
 	"embed"
-	"errors"
 	"fmt"
 	"html/template"
 	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
+	"github.com/luigiazoreng/solarguard/internal/ingest"
 	"github.com/luigiazoreng/solarguard/internal/labels"
 	"github.com/luigiazoreng/solarguard/internal/mcpserver"
 	"github.com/luigiazoreng/solarguard/internal/store"
@@ -24,34 +25,34 @@ var staticFS embed.FS
 //go:embed templates/*.html
 var templatesFS embed.FS
 
-var (
-	ErrInvalidPassword = errors.New("senha incorreta")
-	ErrTooManyRequests = errors.New("muitas tentativas inválidas; tente novamente mais tarde")
-)
-
 type Config struct {
-	Addr          string
-	AdminPassword string
-	MCPToken      string
-	Store         *store.Store
-	Logger        *slog.Logger
-	Now           func() time.Time
+	MCPToken   string
+	TrustProxy bool // the port is reachable only through a reverse proxy
+	Store      *store.Store
+	Tokens     *ingest.Manager // nil: accounts cannot add provider tokens
+	Logger     *slog.Logger
+	Now        func() time.Time
 }
 
 type Server struct {
-	cfg            Config
-	store          *store.Store
-	sm             *SessionManager
-	templates      map[string]*template.Template
-	mux            *http.ServeMux
-	handler        http.Handler
-	mcpHandler     http.Handler
-	noAuthRequired bool
+	cfg         Config
+	store       *store.Store
+	sm          *SessionManager
+	loginLimit  *attemptLimiter
+	signupLimit *attemptLimiter
+	tokenLimit  *attemptLimiter
+	templates   map[string]*template.Template
+	mux         *http.ServeMux
+	handler     http.Handler
+	mcpHandler  http.Handler
 }
 
 type contextKey string
 
 const sessionContextKey contextKey = "session"
+
+// standalonePages render without the layout, because they have no session.
+var standalonePages = []string{"login", "signup"}
 
 func NewServer(cfg Config) (*Server, error) {
 	if cfg.Now == nil {
@@ -62,19 +63,14 @@ func NewServer(cfg Config) (*Server, error) {
 	}
 
 	s := &Server{
-		cfg:       cfg,
-		store:     cfg.Store,
-		sm:        NewSessionManager(cfg.AdminPassword, cfg.Now),
-		templates: make(map[string]*template.Template),
-		mux:       http.NewServeMux(),
-	}
-
-	// Security check: Refuse non-loopback start if password is empty
-	if cfg.AdminPassword == "" {
-		if !IsLoopback(cfg.Addr) {
-			return nil, errors.New("SOLARGUARD_ADMIN_PASSWORD is required for non-loopback addresses")
-		}
-		s.noAuthRequired = true
+		cfg:         cfg,
+		store:       cfg.Store,
+		sm:          NewSessionManager(cfg.Now),
+		loginLimit:  newAttemptLimiter(5, 15*time.Minute, cfg.Now),
+		signupLimit: newAttemptLimiter(5, time.Hour, cfg.Now),
+		tokenLimit:  newAttemptLimiter(5, 15*time.Minute, cfg.Now),
+		templates:   make(map[string]*template.Template),
+		mux:         http.NewServeMux(),
 	}
 
 	// Initialize MCP HTTPHandler if token is provided
@@ -145,6 +141,7 @@ func NewServer(cfg Config) (*Server, error) {
 		"reports",
 		"report_detail",
 		"manage",
+		"account",
 	}
 
 	for _, page := range pageFiles {
@@ -159,11 +156,13 @@ func NewServer(cfg Config) (*Server, error) {
 		s.templates[page] = pageTmpl
 	}
 
-	loginTmpl, err := template.New("login.html").Funcs(funcMap).ParseFS(templatesFS, "templates/login.html")
-	if err != nil {
-		return nil, fmt.Errorf("parse login template: %w", err)
+	for _, page := range standalonePages {
+		tmpl, err := template.New(page+".html").Funcs(funcMap).ParseFS(templatesFS, "templates/"+page+".html")
+		if err != nil {
+			return nil, fmt.Errorf("parse %s template: %w", page, err)
+		}
+		s.templates[page] = tmpl
 	}
-	s.templates["login"] = loginTmpl
 
 	s.routes()
 	s.buildHandlerChain()
@@ -177,8 +176,8 @@ func (s *Server) render(w http.ResponseWriter, page string, data any) error {
 		return fmt.Errorf("template %s not found", page)
 	}
 	templateName := "layout.html"
-	if page == "login" {
-		templateName = "login.html"
+	if slices.Contains(standalonePages, page) {
+		templateName = page + ".html"
 	}
 	return tmpl.ExecuteTemplate(w, templateName, data)
 }
@@ -201,10 +200,6 @@ func (s *Server) Handler() http.Handler {
 	return s
 }
 
-func (s *Server) NoAuthRequired() bool {
-	return s.noAuthRequired
-}
-
 func (s *Server) ActiveSessionCount() int {
 	return s.sm.ActiveSessionCount()
 }
@@ -221,7 +216,13 @@ func (s *Server) routes() {
 	// Auth routes
 	s.mux.HandleFunc("GET /login", s.handleLoginPage)
 	s.mux.HandleFunc("POST /login", s.handleLoginSubmit)
+	s.mux.HandleFunc("GET /signup", s.handleSignupPage)
+	s.mux.HandleFunc("POST /signup", s.handleSignupSubmit)
 	s.mux.HandleFunc("POST /logout", s.handleLogout)
+
+	s.mux.HandleFunc("GET /account", s.handleAccount)
+	s.mux.HandleFunc("POST /account/token", s.handleAccountTokenSave)
+	s.mux.HandleFunc("POST /account/token/remove", s.handleAccountTokenRemove)
 
 	// App routes
 	s.mux.HandleFunc("GET /{$}", s.handleOverview)
@@ -291,42 +292,12 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 
-		// Public assets and login endpoints
-		if strings.HasPrefix(path, "/static/") || path == "/login" {
+		// Public assets and account entry points
+		if strings.HasPrefix(path, "/static/") || isAccountEntry(path) {
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		if s.noAuthRequired {
-			if !IsLoopbackHost(r.Host) {
-				http.Error(w, "Acesso proibido: host não permitido em modo local sem senha", http.StatusForbidden)
-				return
-			}
-			// In no-auth loopback mode, ensure session exists for CSRF protection
-			var sess *Session
-			cookie, err := r.Cookie("solarguard_session")
-			if err == nil {
-				sess, _ = s.sm.GetSession(cookie.Value)
-			}
-			if sess == nil {
-				sess = s.sm.CreateAnonymousSession()
-				isSecure := r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"
-				http.SetCookie(w, &http.Cookie{
-					Name:     "solarguard_session",
-					Value:    sess.Token,
-					Path:     "/",
-					HttpOnly: true,
-					SameSite: http.SameSiteLaxMode,
-					Secure:   isSecure,
-					MaxAge:   12 * 3600,
-				})
-			}
-			ctx := context.WithValue(r.Context(), sessionContextKey, sess)
-			next.ServeHTTP(w, r.WithContext(ctx))
-			return
-		}
-
-		// Authenticated mode
 		cookie, err := r.Cookie("solarguard_session")
 		if err != nil {
 			s.redirectOrUnauthorized(w, r)
@@ -355,14 +326,12 @@ func (s *Server) redirectOrUnauthorized(w http.ResponseWriter, r *http.Request) 
 func (s *Server) csrfMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
-			// Skip CSRF check on login submit itself
-			if r.URL.Path != "/login" {
-				// Origin verification
-				if !VerifyOrigin(r) {
-					http.Error(w, "Origem da requisição inválida", http.StatusForbidden)
-					return
-				}
-
+			if !VerifyOrigin(r) {
+				http.Error(w, "Origem da requisição inválida", http.StatusForbidden)
+				return
+			}
+			// Before the login there is no session to hold a CSRF token.
+			if !isAccountEntry(r.URL.Path) {
 				// Session & CSRF verification
 				sess, _ := r.Context().Value(sessionContextKey).(*Session)
 
@@ -384,85 +353,17 @@ func (s *Server) csrfMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
-	if s.noAuthRequired {
-		http.Redirect(w, r, "/", http.StatusFound)
-		return
-	}
-	_ = s.render(w, "login", map[string]any{
-		"Error": "",
-	})
-}
-
-func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
-	if s.noAuthRequired {
-		http.Redirect(w, r, "/", http.StatusSeeOther)
-		return
-	}
-
-	password := r.PostFormValue("password")
-	remoteIP := r.RemoteAddr
-
-	sess, err := s.sm.Authenticate(password, remoteIP)
-	if errors.Is(err, ErrTooManyRequests) {
-		w.WriteHeader(http.StatusTooManyRequests)
-		_ = s.render(w, "login", map[string]any{
-			"Error": "Muitas tentativas incorretas. Tente novamente em 15 minutos.",
-		})
-		return
-	}
-	if err != nil {
-		w.WriteHeader(http.StatusUnauthorized)
-		_ = s.render(w, "login", map[string]any{
-			"Error": "Senha incorreta.",
-		})
-		return
-	}
-
-	isSecure := r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"
-	http.SetCookie(w, &http.Cookie{
-		Name:     "solarguard_session",
-		Value:    sess.Token,
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-		Secure:   isSecure,
-		MaxAge:   12 * 3600,
-	})
-
-	http.Redirect(w, r, "/", http.StatusSeeOther)
-}
-
-func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
-	if cookie, err := r.Cookie("solarguard_session"); err == nil {
-		s.sm.RevokeSession(cookie.Value)
-	}
-
-	isSecure := r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"
-	http.SetCookie(w, &http.Cookie{
-		Name:     "solarguard_session",
-		Value:    "",
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-		Secure:   isSecure,
-		MaxAge:   -1,
-	})
-
-	http.Redirect(w, r, "/login", http.StatusSeeOther)
-}
-
 func (s *Server) baseTemplateData(r *http.Request, title, activeNav string) map[string]any {
-	var csrfToken string
+	var csrfToken, email string
 	if sess, ok := r.Context().Value(sessionContextKey).(*Session); ok && sess != nil {
 		csrfToken = sess.CSRFToken
+		email = sess.Email
 	}
 
 	return map[string]any{
-		"Title":              title,
-		"ActiveNav":          activeNav,
-		"CSRFToken":          csrfToken,
-		"ShowLoopbackBanner": s.noAuthRequired,
-		"NoAuth":             s.noAuthRequired,
+		"Title":     title,
+		"ActiveNav": activeNav,
+		"CSRFToken": csrfToken,
+		"UserEmail": email,
 	}
 }

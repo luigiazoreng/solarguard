@@ -16,14 +16,15 @@ type ReportListItem struct {
 
 func (s *Server) handleReportsList(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	reps, err := s.store.ListReports(ctx, store.ReportFilter{Limit: 50})
+	userID := sessionUserID(r)
+	reps, err := s.store.ListReports(ctx, store.ReportFilter{UserID: &userID, Limit: 50})
 	if err != nil {
 		s.cfg.Logger.Error("list reports", "err", err)
 		http.Error(w, "Erro ao listar relatórios", http.StatusInternalServerError)
 		return
 	}
 
-	plants, _ := s.store.ListPlants(ctx)
+	plants, _ := s.store.ListPlantsForUser(ctx, userID)
 	plantMap := make(map[int64]string)
 	for _, p := range plants {
 		plantMap[p.ID] = p.Name
@@ -70,7 +71,7 @@ func (s *Server) handleReportDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rep, err := s.store.GetReport(ctx, reportID)
+	rep, err := s.userReport(r, reportID)
 	if errors.Is(err, store.ErrNotFound) {
 		http.NotFound(w, r)
 		return
@@ -80,16 +81,15 @@ func (s *Server) handleReportDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	pName := "Todas as usinas"
-	if rep.PlantID != nil {
-		if plant, err := s.store.GetPlant(ctx, *rep.PlantID); err == nil {
-			pName = plant.Name
-		}
+	pName := ""
+	if plant, err := s.store.GetPlant(ctx, *rep.PlantID); err == nil {
+		pName = plant.Name
 	}
 
 	data := s.baseTemplateData(r, rep.Title, "reports")
 	data["Report"] = rep
 	data["PlantName"] = pName
+	data["View"] = BuildReportView(rep.BodyMD, ForecastFromDataJSON(rep.DataJSON))
 
 	if err := s.render(w, "report_detail", data); err != nil {
 		s.cfg.Logger.Error("render report detail", "err", err)
@@ -102,6 +102,10 @@ func (s *Server) handleReportGenerate(w http.ResponseWriter, r *http.Request) {
 	plantID, err := strconv.ParseInt(plantIDStr, 10, 64)
 	if err != nil {
 		http.Error(w, "Usina inválida", http.StatusBadRequest)
+		return
+	}
+	if _, err := s.userPlant(r, plantID); err != nil {
+		s.notFoundOrError(w, r, err)
 		return
 	}
 
@@ -133,6 +137,11 @@ func (s *Server) handleReportFinalize(w http.ResponseWriter, r *http.Request) {
 	reportID, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
 		http.NotFound(w, r)
+		return
+	}
+
+	if _, err := s.userReport(r, reportID); err != nil {
+		s.notFoundOrError(w, r, err)
 		return
 	}
 

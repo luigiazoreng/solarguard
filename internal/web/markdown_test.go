@@ -47,7 +47,7 @@ func TestMarkdownRendererSafe(t *testing.T) {
 			input: `| Modelo | MAE |
 |---|---|
 | Ridge | 4,45 |`,
-			contains: []string{"<table>", "<thead>", "<th>Modelo</th>", "<th>MAE</th>", "<tbody>", "<td>Ridge</td>", "<td>4,45</td>", "</table>"},
+			contains: []string{"<table>", "<thead>", "<th>Modelo</th>", `<th class="num">MAE</th>`, "<tbody>", "<td>Ridge</td>", `<td class="num">4,45</td>`, "</table>"},
 		},
 	}
 

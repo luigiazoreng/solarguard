@@ -13,6 +13,7 @@ import (
 
 	"github.com/luigiazoreng/solarguard/internal/ingest"
 	"github.com/luigiazoreng/solarguard/internal/pipeline"
+	"github.com/luigiazoreng/solarguard/internal/secrets"
 	"github.com/luigiazoreng/solarguard/internal/store"
 	"github.com/luigiazoreng/solarguard/internal/web"
 )
@@ -34,8 +35,13 @@ func runServe(ctx context.Context, args []string) error {
 		return err
 	}
 
-	adminPassword := os.Getenv("SOLARGUARD_ADMIN_PASSWORD")
 	mcpToken := os.Getenv("SOLARGUARD_MCP_TOKEN")
+
+	// Without the key, no account could save or read a token.
+	box, err := secrets.FromEnv()
+	if err != nil {
+		return fmt.Errorf("%w; gere uma com: openssl rand -base64 32", err)
+	}
 
 	st, err := store.Open(ctx, dbPath())
 	if err != nil {
@@ -45,12 +51,16 @@ func runServe(ctx context.Context, args []string) error {
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 
+	stdLogger := log.New(os.Stderr, "[ingest] ", log.LstdFlags)
+	collectors := ingest.NewManager(ctx, st, box, stdLogger, ingest.WithGrowattBaseURL(os.Getenv("SOLARGUARD_GROWATT_BASE_URL")))
+	defer collectors.Wait()
+
 	cfg := web.Config{
-		Addr:          *addr,
-		AdminPassword: adminPassword,
-		MCPToken:      mcpToken,
-		Store:         st,
-		Logger:        logger,
+		MCPToken:   mcpToken,
+		TrustProxy: os.Getenv("SOLARGUARD_TRUST_PROXY") == "true",
+		Store:      st,
+		Tokens:     collectors,
+		Logger:     logger,
 	}
 
 	srv, err := web.NewServer(cfg)
@@ -59,8 +69,7 @@ func runServe(ctx context.Context, args []string) error {
 	}
 
 	// 1. Start ingest service
-	stdLogger := log.New(os.Stderr, "[ingest] ", log.LstdFlags)
-	if err := ingest.StartAll(ctx, st, stdLogger); err != nil {
+	if err := collectors.StartAll(); err != nil {
 		logger.Warn("ingest StartAll avisos", "err", err)
 	}
 
@@ -82,7 +91,7 @@ func runServe(ctx context.Context, args []string) error {
 
 	serverErr := make(chan error, 1)
 	go func() {
-		logger.Info("SolarGuard web server iniciado", "addr", *addr, "no_auth", srv.NoAuthRequired())
+		logger.Info("SolarGuard web server iniciado", "addr", *addr)
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			serverErr <- err
 		}

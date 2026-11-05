@@ -17,7 +17,8 @@ import (
 
 type SourceStatusItem struct {
 	Source          domain.Source
-	IsEnvConfigured bool
+	NeedsCredential bool
+	HasCredential   bool
 	Stats           store.QueueStats
 }
 
@@ -43,7 +44,8 @@ type PipelineRunRow struct {
 func (s *Server) handleManage(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	plants, err := s.store.ListPlants(ctx)
+	userID := sessionUserID(r)
+	plants, err := s.store.ListPlantsForUser(ctx, userID)
 	if err != nil {
 		http.Error(w, "Erro ao listar usinas", http.StatusInternalServerError)
 		return
@@ -54,17 +56,14 @@ func (s *Server) handleManage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 1. Sources with queue stats & credential status (NO VALUES EXPOSED)
-	sources, _ := s.store.ListSources(ctx)
+	sources, _ := s.store.ListSourcesForUser(ctx, userID)
 	var sourceStats []SourceStatusItem
 	for _, src := range sources {
 		stats, _ := s.store.GetQueueStats(ctx, src.ID)
-		isConfigured := false
-		if src.CredentialEnv != "" && os.Getenv(src.CredentialEnv) != "" {
-			isConfigured = true
-		}
 		sourceStats = append(sourceStats, SourceStatusItem{
 			Source:          src,
-			IsEnvConfigured: isConfigured,
+			NeedsCredential: src.Kind == "growatt",
+			HasCredential:   src.CredentialEnc != "" || (src.CredentialEnv != "" && os.Getenv(src.CredentialEnv) != ""),
 			Stats:           stats,
 		})
 	}
@@ -117,7 +116,7 @@ func (s *Server) handleManage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 4. Latest pipeline runs
-	rawRuns, _ := s.store.ListPipelineRuns(ctx, nil, 10)
+	rawRuns, _ := s.store.ListPipelineRunsForUser(ctx, userID, 10)
 	var runRows []PipelineRunRow
 	for _, r := range rawRuns {
 		var steps []pipeline.StepOutcome
@@ -167,6 +166,11 @@ func (s *Server) handleManagePlantUpdate(w http.ResponseWriter, r *http.Request)
 	plantID, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
 		http.NotFound(w, r)
+		return
+	}
+
+	if _, err := s.userPlant(r, plantID); err != nil {
+		s.notFoundOrError(w, r, err)
 		return
 	}
 
@@ -220,6 +224,16 @@ func (s *Server) handleManageDeviceUpdate(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	device, err := s.store.GetDevice(ctx, deviceID)
+	if err != nil {
+		s.notFoundOrError(w, r, err)
+		return
+	}
+	if _, err := s.userPlant(r, device.PlantID); err != nil {
+		s.notFoundOrError(w, r, err)
+		return
+	}
+
 	var capPtr, areaPtr, effPtr *float64
 
 	capStr := r.PostFormValue("capacity_kw")
@@ -270,6 +284,10 @@ func (s *Server) handleManageRuleUpdate(w http.ResponseWriter, r *http.Request) 
 		http.Redirect(w, r, "/manage?error=Parâmetros+inválidos", http.StatusSeeOther)
 		return
 	}
+	if _, err := s.userPlant(r, plantID); err != nil {
+		s.notFoundOrError(w, r, err)
+		return
+	}
 
 	enabled := r.PostFormValue("enabled") == "true"
 	paramsJSON := strings.TrimSpace(r.PostFormValue("params_json"))
@@ -301,21 +319,37 @@ func (s *Server) handleManageRuleUpdate(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleManagePipelineRun(w http.ResponseWriter, r *http.Request) {
-	plantIDStr := r.PostFormValue("plant_id")
+	var plantIDs []int64
+	if plantIDStr := r.PostFormValue("plant_id"); plantIDStr != "" {
+		id, err := strconv.ParseInt(plantIDStr, 10, 64)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		if _, err := s.userPlant(r, id); err != nil {
+			s.notFoundOrError(w, r, err)
+			return
+		}
+		plantIDs = append(plantIDs, id)
+	} else {
+		plants, err := s.store.ListPlantsForUser(r.Context(), sessionUserID(r))
+		if err != nil {
+			http.Error(w, "Erro ao listar usinas", http.StatusInternalServerError)
+			return
+		}
+		for _, p := range plants {
+			plantIDs = append(plantIDs, p.ID)
+		}
+	}
 
 	go func() {
 		bgCtx := context.Background()
-		deps := pipeline.Deps{
-			Logger: s.cfg.Logger,
-		}
-
-		if plantIDStr != "" {
-			if id, err := strconv.ParseInt(plantIDStr, 10, 64); err == nil && id > 0 {
-				_, _ = pipeline.RunPlant(bgCtx, s.store, id, deps)
-				return
+		deps := pipeline.Deps{Logger: s.cfg.Logger}
+		for _, id := range plantIDs {
+			if _, err := pipeline.RunPlant(bgCtx, s.store, id, deps); err != nil {
+				s.cfg.Logger.Error("run pipeline", "plant_id", id, "err", err)
 			}
 		}
-		_, _ = pipeline.RunAll(bgCtx, s.store, deps)
 	}()
 
 	http.Redirect(w, r, "/manage?success=Pipeline+iniciada+em+segundo+plano", http.StatusSeeOther)

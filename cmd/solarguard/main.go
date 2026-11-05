@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"sort"
 	"syscall"
+	_ "time/tzdata" // plants have their own time zones; servers may not ship the database
 
 	"github.com/luigiazoreng/solarguard/internal/store"
 )

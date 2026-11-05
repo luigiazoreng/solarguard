@@ -30,9 +30,47 @@
 </div>
 {{end}}
 
-<div class="report-panel card">
-  <div class="report-body markdown-body">
-    {{renderMarkdown .Report.BodyMD}}
-  </div>
+{{with .View}}
+{{if .Sections}}
+<nav class="report-toc" aria-label="Seções do relatório">
+  {{range .Sections}}
+  <a href="#{{.ID}}">{{if .Number}}<span class="toc-num">{{.Number}}</span>{{end}}{{.TitleHTML}}</a>
+  {{end}}
+</nav>
+{{end}}
+
+<div class="report-body markdown-body">
+  {{if .Preamble}}<div class="report-preamble card">{{.Preamble}}</div>{{end}}
+
+  {{range .Sections}}
+  <section class="report-section card" id="{{.ID}}">
+    <h2 class="report-section-title">{{if .Number}}<span class="section-num">{{.Number}}</span>{{end}}<span>{{.TitleHTML}}</span></h2>
+
+    {{if .KPIs}}
+    <div class="report-kpis">
+      {{range .KPIs}}
+      <div class="card kpi-card">
+        <div class="card-title">{{.Label}}</div>
+        <div class="card-value{{if .Small}} value-small{{end}}">{{.Value}}{{if .Unit}} <span class="unit">{{.Unit}}</span>{{end}}</div>
+        {{if .Sub}}<div class="card-sub">{{.Sub}}</div>{{end}}
+      </div>
+      {{end}}
+    </div>
+    {{end}}
+
+    {{with .Forecast}}
+    <figure class="report-chart">
+      <figcaption class="report-chart-title">Previsão de geração por dia (kWh/dia)</figcaption>
+      <div id="report-forecast-chart" class="chart report-chart-plot" role="img"
+           aria-label="Gráfico da geração esperada prevista por dia, em kWh, com intervalo de 90% quando disponível. Os mesmos valores estão na tabela abaixo."></div>
+      <script type="application/json" id="report-forecast-data">{{.}}</script>
+      <figcaption class="small">Valores previstos, não medidos: soma da geração esperada de todos os dispositivos em cada dia.{{if .HasBand}} A faixa é o intervalo de 90% combinado dos dispositivos; dias sem a faixa completa aparecem sem ela.{{else}} Este relatório não traz intervalo de incerteza.{{end}}</figcaption>
+    </figure>
+    {{end}}
+
+    {{.HTML}}
+  </section>
+  {{end}}
 </div>
+{{end}}
 {{end}}

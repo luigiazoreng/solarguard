@@ -14,32 +14,24 @@ import (
 type Session struct {
 	Token     string
 	CSRFToken string
+	UserID    int64
+	Email     string
 	ExpiresAt time.Time
 }
 
-type failedAttempt struct {
-	count        int
-	lastFailure  time.Time
-	lockoutUntil time.Time
-}
-
 type SessionManager struct {
-	mu            sync.RWMutex
-	sessions      map[string]*Session
-	failures      map[string]*failedAttempt
-	adminPassword string
-	now           func() time.Time
+	mu       sync.RWMutex
+	sessions map[string]*Session
+	now      func() time.Time
 }
 
-func NewSessionManager(adminPassword string, now func() time.Time) *SessionManager {
+func NewSessionManager(now func() time.Time) *SessionManager {
 	if now == nil {
 		now = time.Now
 	}
 	return &SessionManager{
-		sessions:      make(map[string]*Session),
-		failures:      make(map[string]*failedAttempt),
-		adminPassword: adminPassword,
-		now:           now,
+		sessions: make(map[string]*Session),
+		now:      now,
 	}
 }
 
@@ -51,94 +43,93 @@ func generateRandomToken(bytesLen int) (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-func (sm *SessionManager) purgeExpiredLocked(now time.Time) {
+// CreateSession starts a session for an account that already proved who it is.
+func (sm *SessionManager) CreateSession(userID int64, email string) (*Session, error) {
+	token, err := generateRandomToken(32)
+	if err != nil {
+		return nil, err
+	}
+	csrfToken, err := generateRandomToken(32)
+	if err != nil {
+		return nil, err
+	}
+
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	now := sm.now()
 	for k, v := range sm.sessions {
 		if now.After(v.ExpiresAt) {
 			delete(sm.sessions, k)
 		}
 	}
-	for ip, attempt := range sm.failures {
-		if !attempt.lockoutUntil.IsZero() && now.After(attempt.lockoutUntil) {
-			delete(sm.failures, ip)
-		} else if attempt.lockoutUntil.IsZero() && now.Sub(attempt.lastFailure) > time.Hour {
-			delete(sm.failures, ip)
-		}
-	}
-}
-
-// Authenticate verifies password against adminPassword in constant time.
-// It enforces a per-IP delay and lockout after 5 consecutive failures.
-// The mutex is released before sleeping on failure so other requests are not blocked.
-func (sm *SessionManager) Authenticate(password, remoteIP string) (*Session, error) {
-	sm.mu.Lock()
-	now := sm.now()
-	sm.purgeExpiredLocked(now)
-
-	// Check lockout
-	ipKey := extractIP(remoteIP)
-	attempt, exists := sm.failures[ipKey]
-	if exists && attempt.count >= 5 {
-		if now.Before(attempt.lockoutUntil) {
-			sm.mu.Unlock()
-			return nil, ErrTooManyRequests
-		}
-		// Lockout expired, reset
-		delete(sm.failures, ipKey)
-		attempt = nil
-		exists = false
-	}
-
-	// Constant-time compare
-	passMatch := subtle.ConstantTimeCompare([]byte(password), []byte(sm.adminPassword)) == 1
-	if !passMatch {
-		if !exists {
-			attempt = &failedAttempt{}
-			sm.failures[ipKey] = attempt
-		}
-		attempt.count++
-		attempt.lastFailure = now
-		if attempt.count >= 5 {
-			attempt.lockoutUntil = now.Add(15 * time.Minute)
-		}
-		// Release mutex BEFORE sleeping to not block other users
-		sm.mu.Unlock()
-		time.Sleep(50 * time.Millisecond)
-		return nil, ErrInvalidPassword
-	}
-
-	// Success: clear failures
-	delete(sm.failures, ipKey)
-
-	token, _ := generateRandomToken(32)
-	csrfToken, _ := generateRandomToken(32)
 	sess := &Session{
 		Token:     token,
 		CSRFToken: csrfToken,
+		UserID:    userID,
+		Email:     email,
 		ExpiresAt: now.Add(12 * time.Hour),
 	}
 	sm.sessions[token] = sess
-	sm.mu.Unlock()
-
 	return sess, nil
 }
 
-// CreateAnonymousSession creates a session for loopback mode without password.
-func (sm *SessionManager) CreateAnonymousSession() *Session {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
+// attemptLimiter blocks a key for a while after too many attempts.
+type attemptLimiter struct {
+	mu       sync.Mutex
+	max      int
+	lockout  time.Duration
+	now      func() time.Time
+	attempts map[string]*attemptCount
+}
 
-	now := sm.now()
-	sm.purgeExpiredLocked(now)
+type attemptCount struct {
+	count int
+	until time.Time
+}
 
-	token, _ := generateRandomToken(32)
-	csrfToken, _ := generateRandomToken(32)
-	sess := &Session{
-		Token:     token,
-		CSRFToken: csrfToken,
-		ExpiresAt: now.Add(12 * time.Hour),
+func newAttemptLimiter(max int, lockout time.Duration, now func() time.Time) *attemptLimiter {
+	return &attemptLimiter{max: max, lockout: lockout, now: now, attempts: make(map[string]*attemptCount)}
+}
+
+// Blocked reports whether the key used up its attempts.
+func (l *attemptLimiter) Blocked(key string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	a, ok := l.attempts[key]
+	if !ok {
+		return false
 	}
-	sm.sessions[token] = sess
-	return sess
+	if !l.now().Before(a.until) {
+		delete(l.attempts, key)
+		return false
+	}
+	return a.count >= l.max
+}
+
+// Record counts one attempt. The block runs from the latest attempt.
+func (l *attemptLimiter) Record(key string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := l.now()
+	for k, a := range l.attempts {
+		if !now.Before(a.until) {
+			delete(l.attempts, k)
+		}
+	}
+	a, ok := l.attempts[key]
+	if !ok {
+		a = &attemptCount{}
+		l.attempts[key] = a
+	}
+	a.count++
+	a.until = now.Add(l.lockout)
+}
+
+// Clear forgets the attempts of a key.
+func (l *attemptLimiter) Clear(key string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	delete(l.attempts, key)
 }
 
 func (sm *SessionManager) GetSession(token string) (*Session, bool) {
@@ -175,6 +166,27 @@ func extractIP(remoteAddr string) string {
 	return host
 }
 
+// ClientIP returns the address used to count failed logins. X-Forwarded-For is
+// trusted only from a loopback peer, or from any peer when trustProxy says the
+// port is reachable only through the reverse proxy. Only its last entry counts,
+// because that is the one the proxy appended.
+func ClientIP(r *http.Request, trustProxy bool) string {
+	peer := extractIP(r.RemoteAddr)
+	if !trustProxy && !IsLoopback(peer) {
+		return peer
+	}
+	forwarded := r.Header.Values("X-Forwarded-For")
+	if len(forwarded) == 0 {
+		return peer
+	}
+	entries := strings.Split(forwarded[len(forwarded)-1], ",")
+	last := strings.TrimSpace(entries[len(entries)-1])
+	if net.ParseIP(last) == nil {
+		return peer
+	}
+	return last
+}
+
 // IsLoopback checks whether addr (or host part) represents a loopback address.
 func IsLoopback(addr string) bool {
 	host, _, err := net.SplitHostPort(addr)
@@ -182,28 +194,6 @@ func IsLoopback(addr string) bool {
 		host = addr
 	}
 	if host == "localhost" {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
-}
-
-// IsLoopbackHost checks whether a Host header (host or host:port) is loopback.
-// Matches localhost, 127.0.0.1, [::1], ::1 with any port to protect against DNS rebinding.
-func IsLoopbackHost(hostHeader string) bool {
-	host := strings.TrimSpace(hostHeader)
-	if host == "" {
-		return false
-	}
-	h, _, err := net.SplitHostPort(host)
-	if err == nil {
-		host = h
-	}
-	// Strip IPv6 brackets if present
-	host = strings.TrimPrefix(host, "[")
-	host = strings.TrimSuffix(host, "]")
-
-	if strings.EqualFold(host, "localhost") {
 		return true
 	}
 	ip := net.ParseIP(host)

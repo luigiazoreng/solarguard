@@ -26,15 +26,18 @@ const (
 	QualityInvalid   Quality = "invalid"
 )
 
-// Source is a configured data origin. CredentialEnv names the environment
-// variable holding the secret; the secret itself is never stored.
+// Source is a configured data origin. Its secret is either CredentialEnc, the
+// token encrypted by an account, or the environment variable named by
+// CredentialEnv, used by the command line. It is never stored in clear text.
 type Source struct {
 	ID            int64
 	Kind          string
 	Name          string
 	ConfigJSON    string
 	CredentialEnv string
+	CredentialEnc string
 	Enabled       bool
+	UserID        *int64 // nil: no account owns it, so the panel hides it
 }
 
 // Plant is one generation site. Optional fields are nil when unknown.

@@ -770,7 +770,7 @@ func TestMissingTokenEnvVar_SkipsOneAndRunsTheOther(t *testing.T) {
 	logger := log.New(io.Discard, "", 0)
 
 	// StartAll runs runners in background goroutines
-	err = StartAll(ctx, st, logger)
+	err = NewManager(ctx, st, nil, logger).StartAll()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1191,7 +1191,7 @@ func TestStartAllSchedules(t *testing.T) {
 	}
 
 	logger := log.New(io.Discard, "", 0)
-	if err := StartAll(ctx, st, logger); err != nil {
+	if err := NewManager(ctx, st, nil, logger).StartAll(); err != nil {
 		t.Fatal(err)
 	}
 

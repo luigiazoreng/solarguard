@@ -129,186 +129,17 @@ func seedPlantWithDevices(t *testing.T, st *store.Store, extID, name string) (do
 	return p, d1, d2
 }
 
-// 1. Login, logout, wrong password, lockout, expiry; every protected route redirects when logged out.
-func TestAuth_LoginLogoutWrongPasswordLockoutExpiryRedirects(t *testing.T) {
-	st := newWebTestStore(t)
-	mockNow := time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC)
-
-	cfg := web.Config{
-		Addr:          "127.0.0.1:8080",
-		AdminPassword: "supersecretpassword",
-		Store:         st,
-		Now:           func() time.Time { return mockNow },
-	}
-	srv, err := web.NewServer(cfg)
-	if err != nil {
-		t.Fatalf("new server: %v", err)
-	}
-
-	ts := httptest.NewServer(srv.Handler())
-	defer ts.Close()
-
-	client := &http.Client{
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse // do not follow redirects
-		},
-	}
-
-	// 1a. Protected routes redirect when logged out
-	protectedRoutes := []string{"/", "/plants/1", "/alerts", "/reports", "/manage"}
-	for _, route := range protectedRoutes {
-		resp, err := client.Get(ts.URL + route)
-		if err != nil {
-			t.Fatalf("get %s: %v", route, err)
-		}
-		resp.Body.Close()
-		if resp.StatusCode != http.StatusFound && resp.StatusCode != http.StatusSeeOther {
-			t.Errorf("expected redirect for %s when logged out, got status %d", route, resp.StatusCode)
-		}
-		loc := resp.Header.Get("Location")
-		if !strings.HasPrefix(loc, "/login") {
-			t.Errorf("expected redirect to /login, got %q", loc)
-		}
-	}
-
-	// 1b. Wrong password
-	wrongForm := url.Values{"password": {"wrongpass"}}
-	resp, err := client.PostForm(ts.URL+"/login", wrongForm)
-	if err != nil {
-		t.Fatalf("post login wrong pass: %v", err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Errorf("expected 401 Unauthorized for wrong pass, got %d", resp.StatusCode)
-	}
-
-	// 1c. Lockout after 5 failures from same IP
-	for i := 0; i < 4; i++ {
-		r, err := client.PostForm(ts.URL+"/login", wrongForm)
-		if err != nil {
-			t.Fatal(err)
-		}
-		r.Body.Close()
-	}
-	// 5th failure triggered lockout
-	lockoutResp, err := client.PostForm(ts.URL+"/login", wrongForm)
-	if err != nil {
-		t.Fatal(err)
-	}
-	lockoutResp.Body.Close()
-	if lockoutResp.StatusCode != http.StatusTooManyRequests && lockoutResp.StatusCode != http.StatusUnauthorized {
-		t.Errorf("expected 429 Too Many Requests or 401 on lockout, got %d", lockoutResp.StatusCode)
-	}
-
-	// Reset lockout for testing successful login with another client IP simulation or new server
-	cfg2 := web.Config{
-		Addr:          "127.0.0.1:8080",
-		AdminPassword: "supersecretpassword",
-		Store:         st,
-		Now:           func() time.Time { return mockNow },
-	}
-	srv2, _ := web.NewServer(cfg2)
-	ts2 := httptest.NewServer(srv2.Handler())
-	defer ts2.Close()
-
-	// 1d. Successful login
-	goodForm := url.Values{"password": {"supersecretpassword"}}
-	respGood, err := client.PostForm(ts2.URL+"/login", goodForm)
-	if err != nil {
-		t.Fatal(err)
-	}
-	respGood.Body.Close()
-	if respGood.StatusCode != http.StatusSeeOther && respGood.StatusCode != http.StatusFound {
-		t.Fatalf("expected redirect on successful login, got %d", respGood.StatusCode)
-	}
-
-	cookie := respGood.Header.Get("Set-Cookie")
-	if cookie == "" || !strings.Contains(cookie, "solarguard_session") {
-		t.Fatalf("expected session cookie, got %q", cookie)
-	}
-	if !strings.Contains(cookie, "HttpOnly") {
-		t.Errorf("cookie must have HttpOnly: %s", cookie)
-	}
-	if !strings.Contains(cookie, "SameSite=Lax") {
-		t.Errorf("cookie must have SameSite=Lax: %s", cookie)
-	}
-
-	// 1e. Access protected route with cookie
-	req, _ := http.NewRequest("GET", ts2.URL+"/", nil)
-	req.Header.Set("Cookie", cookie)
-	respAuth, err := client.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	respAuth.Body.Close()
-	if respAuth.StatusCode != http.StatusOK {
-		t.Errorf("expected 200 OK with valid session cookie, got %d", respAuth.StatusCode)
-	}
-
-	// 1f. Session expiry (12 hours)
-	mockNow = mockNow.Add(13 * time.Hour)
-	reqExpired, _ := http.NewRequest("GET", ts2.URL+"/", nil)
-	reqExpired.Header.Set("Cookie", cookie)
-	respExpired, err := client.Do(reqExpired)
-	if err != nil {
-		t.Fatal(err)
-	}
-	respExpired.Body.Close()
-	if respExpired.StatusCode != http.StatusFound && respExpired.StatusCode != http.StatusSeeOther {
-		t.Errorf("expected redirect for expired session, got %d", respExpired.StatusCode)
-	}
-}
-
-// 2. Refusal to start with no password on a non-loopback address.
-func TestServer_RefusalToStartNoPasswordNonLoopback(t *testing.T) {
-	st := newWebTestStore(t)
-
-	// Non-loopback addresses must be refused if password is empty
-	nonLoopbacks := []string{"0.0.0.0:8080", "192.168.1.10:8080", ":8080", "example.com:80"}
-	for _, addr := range nonLoopbacks {
-		cfg := web.Config{
-			Addr:          addr,
-			AdminPassword: "",
-			Store:         st,
-		}
-		_, err := web.NewServer(cfg)
-		if err == nil {
-			t.Errorf("expected server creation to fail for non-loopback addr %q with empty password", addr)
-		}
-	}
-
-	// Loopback addresses are allowed with empty password (no login required)
-	loopbacks := []string{"127.0.0.1:8080", "localhost:8080", "[::1]:8080"}
-	for _, addr := range loopbacks {
-		cfg := web.Config{
-			Addr:          addr,
-			AdminPassword: "",
-			Store:         st,
-		}
-		srv, err := web.NewServer(cfg)
-		if err != nil {
-			t.Errorf("expected server creation to succeed for loopback addr %q with empty password, got err: %v", addr, err)
-			continue
-		}
-		if !srv.NoAuthRequired() {
-			t.Errorf("expected NoAuthRequired to be true for loopback with empty password")
-		}
-	}
-}
-
 // 3. POST without a valid CSRF token is rejected; a GET never changes state.
 func TestSecurity_CSRFAndOriginAndGETNeverChangesState(t *testing.T) {
 	st := newWebTestStore(t)
 	cfg := web.Config{
-		Addr:          "127.0.0.1:8080",
-		AdminPassword: "", // loopback no-auth
-		Store:         st,
+		Store: st,
 	}
 	srv, err := web.NewServer(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ts := httptest.NewServer(srv.Handler())
+	ts := ownerServer(t, st, srv)
 	defer ts.Close()
 
 	client := ts.Client()
@@ -361,12 +192,10 @@ func TestSecurity_CSRFAndOriginAndGETNeverChangesState(t *testing.T) {
 func TestSecurity_XSSPlantNameOnEveryPage(t *testing.T) {
 	st := newWebTestStore(t)
 	cfg := web.Config{
-		Addr:          "127.0.0.1:8080",
-		AdminPassword: "",
-		Store:         st,
+		Store: st,
 	}
 	srv, _ := web.NewServer(cfg)
-	ts := httptest.NewServer(srv.Handler())
+	ts := ownerServer(t, st, srv)
 	defer ts.Close()
 
 	xssName := "<script>alert(1)</script>"
@@ -445,12 +274,10 @@ func TestSecurity_XSSPlantNameOnEveryPage(t *testing.T) {
 func TestPlants_IsolationAndZeroReadingsAndUnknown404(t *testing.T) {
 	st := newWebTestStore(t)
 	cfg := web.Config{
-		Addr:          "127.0.0.1:8080",
-		AdminPassword: "",
-		Store:         st,
+		Store: st,
 	}
 	srv, _ := web.NewServer(cfg)
-	ts := httptest.NewServer(srv.Handler())
+	ts := ownerServer(t, st, srv)
 	defer ts.Close()
 	client := ts.Client()
 
@@ -508,12 +335,10 @@ func TestPlants_IsolationAndZeroReadingsAndUnknown404(t *testing.T) {
 func TestSeries_OkAndNotOkSeparationAndValidation(t *testing.T) {
 	st := newWebTestStore(t)
 	cfg := web.Config{
-		Addr:          "127.0.0.1:8080",
-		AdminPassword: "",
-		Store:         st,
+		Store: st,
 	}
 	srv, _ := web.NewServer(cfg)
-	ts := httptest.NewServer(srv.Handler())
+	ts := ownerServer(t, st, srv)
 	defer ts.Close()
 	client := ts.Client()
 
@@ -656,12 +481,10 @@ func TestSeries_OkAndNotOkSeparationAndValidation(t *testing.T) {
 func TestAlerts_AckAndResolveUpdateStatusKeepNote(t *testing.T) {
 	st := newWebTestStore(t)
 	cfg := web.Config{
-		Addr:          "127.0.0.1:8080",
-		AdminPassword: "",
-		Store:         st,
+		Store: st,
 	}
 	srv, _ := web.NewServer(cfg)
-	ts := httptest.NewServer(srv.Handler())
+	ts := ownerServer(t, st, srv)
 	defer ts.Close()
 
 	plant, d1, _ := seedPlantWithDevices(t, st, "P1", "Planta 1")
@@ -836,15 +659,13 @@ func TestPlant_AnalyticsCardsAndClamping(t *testing.T) {
 
 	// 3. Verify server renders clamped card with mandatory Brazilian Portuguese wording
 	cfg := web.Config{
-		Addr:          "127.0.0.1:8080",
-		AdminPassword: "",
-		Store:         st,
+		Store: st,
 		Now: func() time.Time {
 			return time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
 		},
 	}
 	srv, _ := web.NewServer(cfg)
-	ts := httptest.NewServer(srv.Handler())
+	ts := ownerServer(t, st, srv)
 	defer ts.Close()
 
 	resp, err := ts.Client().Get(fmt.Sprintf("%s/plants/%d?period=30", ts.URL, p.ID))
@@ -881,12 +702,10 @@ func TestSecurity_NoPageShowsEnvVarValue(t *testing.T) {
 	defer os.Unsetenv("SECRET_GROWATT_KEY")
 
 	cfg := web.Config{
-		Addr:          "127.0.0.1:8080",
-		AdminPassword: "",
-		Store:         st,
+		Store: st,
 	}
 	srv, _ := web.NewServer(cfg)
-	ts := httptest.NewServer(srv.Handler())
+	ts := ownerServer(t, st, srv)
 	defer ts.Close()
 	client := ts.Client()
 
@@ -928,12 +747,8 @@ func TestSecurity_NoPageShowsEnvVarValue(t *testing.T) {
 			t.Fatalf("SECURITY VIOLATION: page %s exposes credential value %q!", p, secretValue)
 		}
 		if p == "/manage" {
-			// Manage page MUST show the env var name and whether it is configured
-			if !strings.Contains(body, "SECRET_GROWATT_KEY") {
-				t.Errorf("/manage should display the env var name 'SECRET_GROWATT_KEY'")
-			}
-			if !strings.Contains(body, "Configurada") {
-				t.Errorf("/manage should indicate that the variable is 'Configurada'")
+			if !strings.Contains(body, "Configurado") {
+				t.Errorf("/manage should indicate that the token is configured")
 			}
 		}
 	}
@@ -963,83 +778,6 @@ func TestChart_BandAggregation_3Plus4Gives5(t *testing.T) {
 	}
 }
 
-// 11. DNS rebinding protection: reject non-loopback Host headers in no-password loopback mode.
-func TestSecurity_LoopbackHostHeaderRejection(t *testing.T) {
-	st := newWebTestStore(t)
-	cfg := web.Config{
-		Addr:          "127.0.0.1:8080",
-		AdminPassword: "",
-		Store:         st,
-	}
-	srv, err := web.NewServer(cfg)
-	if err != nil {
-		t.Fatalf("new server: %v", err)
-	}
-	ts := httptest.NewServer(srv.Handler())
-	defer ts.Close()
-	client := ts.Client()
-
-	// External / malicious Host headers must be rejected with 403 Forbidden
-	for _, badHost := range []string{"evil.com", "attacker.domain:8080", "192.168.1.50:8080"} {
-		req, _ := http.NewRequest("GET", ts.URL+"/", nil)
-		req.Host = badHost
-		resp, err := client.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		resp.Body.Close()
-		if resp.StatusCode != http.StatusForbidden {
-			t.Errorf("expected 403 Forbidden for bad host %q, got %d", badHost, resp.StatusCode)
-		}
-	}
-
-	// Loopback Host headers must be accepted with 200 OK
-	for _, goodHost := range []string{"localhost", "localhost:8080", "127.0.0.1:8080", "[::1]:8080"} {
-		req, _ := http.NewRequest("GET", ts.URL+"/", nil)
-		req.Host = goodHost
-		resp, err := client.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			t.Errorf("expected 200 OK for valid loopback host %q, got %d", goodHost, resp.StatusCode)
-		}
-	}
-}
-
-// 12. Session reuse in no-password mode: multiple requests reuse the existing session.
-func TestSecurity_SessionReuseInLoopbackMode(t *testing.T) {
-	st := newWebTestStore(t)
-	cfg := web.Config{
-		Addr:          "127.0.0.1:8080",
-		AdminPassword: "",
-		Store:         st,
-	}
-	srv, err := web.NewServer(cfg)
-	if err != nil {
-		t.Fatalf("new server: %v", err)
-	}
-	ts := httptest.NewServer(srv.Handler())
-	defer ts.Close()
-
-	jar, _ := cookiejar.New(nil)
-	client := &http.Client{Jar: jar}
-
-	for i := 0; i < 5; i++ {
-		resp, err := client.Get(ts.URL + "/")
-		if err != nil {
-			t.Fatal(err)
-		}
-		resp.Body.Close()
-	}
-
-	activeCount := srv.ActiveSessionCount()
-	if activeCount != 1 {
-		t.Errorf("expected 1 session reused across requests, got %d", activeCount)
-	}
-}
-
 // 13. Gestão inputs: empty field keeps stored value, comma separator accepted, invalid number gives error.
 func TestManage_KeepCurrentOnEmptyAndCommaNumbers(t *testing.T) {
 	st := newWebTestStore(t)
@@ -1052,12 +790,10 @@ func TestManage_KeepCurrentOnEmptyAndCommaNumbers(t *testing.T) {
 	_ = st.UpdateDevice(ctx, d1.ID, &initCap, &initArea, &initEff)
 
 	cfg := web.Config{
-		Addr:          "127.0.0.1:8080",
-		AdminPassword: "",
-		Store:         st,
+		Store: st,
 	}
 	srv, _ := web.NewServer(cfg)
-	ts := httptest.NewServer(srv.Handler())
+	ts := ownerServer(t, st, srv)
 	defer ts.Close()
 
 	jar, _ := cookiejar.New(nil)
@@ -1156,12 +892,10 @@ func TestAlerts_DetectedOnFormatting(t *testing.T) {
 	_ = st.SaveAlert(ctx, &alert)
 
 	cfg := web.Config{
-		Addr:          "127.0.0.1:8080",
-		AdminPassword: "",
-		Store:         st,
+		Store: st,
 	}
 	srv, _ := web.NewServer(cfg)
-	ts := httptest.NewServer(srv.Handler())
+	ts := ownerServer(t, st, srv)
 	defer ts.Close()
 
 	client := ts.Client()
@@ -1266,13 +1000,11 @@ func TestOverview_StatusBadgePriorities(t *testing.T) {
 	})
 
 	cfg := web.Config{
-		Addr:          "127.0.0.1:8080",
-		AdminPassword: "",
-		Store:         st,
-		Now:           func() time.Time { return mockNow },
+		Store: st,
+		Now:   func() time.Time { return mockNow },
 	}
 	srv, _ := web.NewServer(cfg)
-	ts := httptest.NewServer(srv.Handler())
+	ts := ownerServer(t, st, srv)
 	defer ts.Close()
 
 	resp, err := ts.Client().Get(ts.URL + "/")
@@ -1319,10 +1051,8 @@ func TestMCP_MountInServe(t *testing.T) {
 
 	// 1. When SOLARGUARD_MCP_TOKEN is unset: /mcp returns 404
 	srvUnset, err := web.NewServer(web.Config{
-		Addr:          "127.0.0.1:8080",
-		AdminPassword: "",
-		MCPToken:      "",
-		Store:         st,
+		MCPToken: "",
+		Store:    st,
 	})
 	if err != nil {
 		t.Fatalf("new server unset: %v", err)
@@ -1342,10 +1072,8 @@ func TestMCP_MountInServe(t *testing.T) {
 	// 2. When SOLARGUARD_MCP_TOKEN is set:
 	secretToken := "secret-mcp-bearer-token-123"
 	srvSet, err := web.NewServer(web.Config{
-		Addr:          "127.0.0.1:8080",
-		AdminPassword: "",
-		MCPToken:      secretToken,
-		Store:         st,
+		MCPToken: secretToken,
+		Store:    st,
 	})
 	if err != nil {
 		t.Fatalf("new server with mcp token: %v", err)
