@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/luigiazoreng/solarguard/internal/domain"
 	"github.com/luigiazoreng/solarguard/internal/pipeline"
@@ -133,7 +134,7 @@ func (s *Server) handleManage(w http.ResponseWriter, r *http.Request) {
 	successMsg := r.URL.Query().Get("success")
 	errorMsg := r.URL.Query().Get("error")
 
-	data := s.baseTemplateData(r, "Gestão e Configurações", "manage")
+	data := s.baseTemplateData(r, "Gestão", "manage")
 	data["Plants"] = plants
 	data["SourceStats"] = sourceStats
 	data["AllDevices"] = allDevices
@@ -169,6 +170,11 @@ func (s *Server) handleManagePlantUpdate(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	name := strings.TrimSpace(r.PostFormValue("name"))
+	if utf8.RuneCountInString(name) > 120 {
+		http.Redirect(w, r, "/manage?error=Nome+deve+ter+no+máximo+120+caracteres", http.StatusSeeOther)
+		return
+	}
 	timezone := strings.TrimSpace(r.PostFormValue("timezone"))
 	if timezone == "" {
 		http.Redirect(w, r, "/manage?error=Fuso+horário+é+obrigatório", http.StatusSeeOther)
@@ -196,7 +202,7 @@ func (s *Server) handleManagePlantUpdate(w http.ResponseWriter, r *http.Request)
 		lonPtr = val
 	}
 
-	if err := s.store.UpdatePlantDetails(ctx, plantID, timezone, latPtr, lonPtr); err != nil {
+	if err := s.store.UpdatePlantDetails(ctx, plantID, name, timezone, latPtr, lonPtr); err != nil {
 		s.cfg.Logger.Error("update plant details", "err", err)
 		http.Redirect(w, r, "/manage?error=Erro+ao+atualizar+usina", http.StatusSeeOther)
 		return

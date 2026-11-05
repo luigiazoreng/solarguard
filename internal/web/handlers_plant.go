@@ -12,6 +12,7 @@ import (
 
 	"github.com/luigiazoreng/solarguard/internal/analytics"
 	"github.com/luigiazoreng/solarguard/internal/domain"
+	"github.com/luigiazoreng/solarguard/internal/labels"
 	"github.com/luigiazoreng/solarguard/internal/store"
 )
 
@@ -19,9 +20,10 @@ import (
 const maxRangeDays = 399
 
 type NotOKReading struct {
-	Date   string  `json:"date"`
-	Value  float64 `json:"value"`
-	Reason string  `json:"reason"`
+	Date        string  `json:"date"`
+	Value       float64 `json:"value"`
+	Reason      string  `json:"reason"`
+	ReasonLabel string  `json:"reason_label"`
 }
 
 type ModelMetricRow struct {
@@ -278,7 +280,7 @@ func (s *Server) handlePlantDetail(w http.ResponseWriter, r *http.Request) {
 						MAE:   m.MAE,
 						RMSE:  m.RMSE,
 						R2:    m.R2,
-						WAPE:  m.WAPE,
+						WAPE:  m.WAPE * 100, // stored as a fraction
 					})
 				}
 				if parsed.WalkForward.Pooled.MAE > 0 || parsed.WalkForward.Pooled.RMSE > 0 {
@@ -287,7 +289,7 @@ func (s *Server) handlePlantDetail(w http.ResponseWriter, r *http.Request) {
 						MAE:   parsed.WalkForward.Pooled.MAE,
 						RMSE:  parsed.WalkForward.Pooled.RMSE,
 						R2:    parsed.WalkForward.Pooled.R2,
-						WAPE:  parsed.WalkForward.Pooled.WAPE,
+						WAPE:  parsed.WalkForward.Pooled.WAPE * 100, // stored as a fraction
 					})
 				}
 			}
@@ -446,9 +448,10 @@ func (s *Server) handlePlantSeries(w http.ResponseWriter, r *http.Request) {
 				val = *rd.Value
 			}
 			entry.notOKValues = append(entry.notOKValues, NotOKReading{
-				Date:   dStr,
-				Value:  val,
-				Reason: rd.QualityReason,
+				Date:        dStr,
+				Value:       val,
+				Reason:      rd.QualityReason,
+				ReasonLabel: labels.Reason(rd.QualityReason),
 			})
 		}
 	}

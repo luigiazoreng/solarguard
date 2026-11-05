@@ -88,6 +88,7 @@ func NewServer(cfg Config) (*Server, error) {
 
 	// Parse HTML templates per page to avoid namespace collisions on "content"
 	funcMap := template.FuncMap{
+		"hasCorruptedName":   func(name string) bool { return strings.ContainsRune(name, '\uFFFD') },
 		"formatFloat":        FormatFloat,
 		"formatInt":          FormatInt,
 		"formatPercent":      FormatPercent,

@@ -290,3 +290,26 @@ func TestSeries_RejectsRangeAboveLimit(t *testing.T) {
 		t.Errorf("status %d, want 400", resp.StatusCode)
 	}
 }
+
+func TestPlant_ModelErrorAndDeviceStatusAreShownCorrectly(t *testing.T) {
+	st := newWebTestStore(t)
+	ctx := context.Background()
+	plant, d1, _ := seedPlantWithDevices(t, st, "P", "Usina")
+	run, err := st.UpsertModelRun(ctx, store.ModelRun{Name: "ridge", Version: "1", PlantID: plant.ID, TrainedAt: time.Now(), Active: true,
+		MetricsJSON: `{"walk_forward":{"pooled":{"mae":4.45,"rmse":6.1,"r2":0.85,"wape":0.137},"devices":{}}}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetActiveModelRun(ctx, plant.ID, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	dayReading(t, st, plant, d1.ID, "2026-05-01", 25, domain.QualityOK)
+
+	body := getBody(t, fmt.Sprintf("%s/plants/%d", startServer(t, st, "", time.Date(2026, 5, 3, 15, 0, 0, 0, time.UTC)).URL, plant.ID))
+	if !strings.Contains(body, "13,7%") {
+		t.Errorf("WAPE is stored as a fraction and must show as 13,7%%")
+	}
+	if strings.Contains(body, "Online") || !strings.Contains(body, "Não informado") {
+		t.Errorf("a device with no reported status, such as an imported one, must not show as Online")
+	}
+}

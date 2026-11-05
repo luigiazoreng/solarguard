@@ -1,20 +1,20 @@
 {{define "content"}}
-<div style="margin-bottom:24px;">
-  <h1 style="margin:0 0 4px 0;font-size:1.6rem;">Visão Geral das Usinas</h1>
-  <p style="color:var(--text-muted);margin:0;">Status operacional e desempenho de geração no dia anterior</p>
+<div class="section">
+  <h1>Usinas</h1>
+  <p class="muted">Geração e alertas · referência: {{formatDate .ReferenceDate}}</p>
 </div>
 
 <!-- Totais no topo -->
-<div class="grid">
+<div class="kpi-strip">
   <div class="card">
-    <div class="card-title">Usinas Monitoradas</div>
+    <div class="card-title">Usinas monitoradas</div>
     <div class="card-value">{{.TotalPlants}}</div>
     <div class="card-sub">{{.TotalDevices}} {{if eq .TotalDevices 1}}dispositivo cadastrado{{else}}dispositivos cadastrados{{end}}</div>
   </div>
   <div class="card">
-    <div class="card-title">Geração de Ontem</div>
+    <div class="card-title">Geração de ontem</div>
     {{if .HasAnyYesterdayReadings}}
-      <div class="card-value">{{formatFloat .TotalYesterdayMeasured 1}} <span style="font-size:1rem;font-weight:normal;">kWh</span></div>
+      <div class="card-value">{{formatFloat .TotalYesterdayMeasured 1}} <span class="unit">kWh</span></div>
       <div class="card-sub">{{.PlantsWithReadings}} de {{.TotalPlants}} usinas com leitura válida</div>
     {{else}}
       <div class="card-value">-</div>
@@ -23,7 +23,7 @@
   </div>
   <div class="card">
     <div class="card-title">Medida x esperada ontem</div>
-    <div class="card-value">
+    <div class="card-value {{if and .HasDeviation (lt .TotalDeviationPct -15.0)}}text-danger{{end}}">
       {{if .HasDeviation}}
         {{if gt .TotalDeviationPct 0.0}}+{{end}}{{formatPercent .TotalDeviationPct}}
       {{else}}
@@ -32,15 +32,15 @@
     </div>
     <div class="card-sub">{{if .HasDeviation}}Só usinas com leitura e valor esperado: {{.PlantsCompared}} de {{.TotalPlants}}{{else}}sem comparação disponível{{end}}</div>
   </div>
-  <div class="card">
-    <div class="card-title">Alertas Abertos</div>
-    <div class="card-value" style="display:flex;gap:8px;align-items:center;">
+  <div class="card {{if gt .TotalCriticalAlerts 0}}attention{{end}}">
+    <div class="card-title">Alertas abertos</div>
+    <div class="card-value {{if gt .TotalOpenAlerts 0}}text-danger{{end}}">
       <span>{{.TotalOpenAlerts}}</span>
     </div>
-    <div class="card-sub" style="display:flex;gap:6px;margin-top:6px;">
-      <span class="badge badge-critical">{{.TotalCriticalAlerts}} crítico</span>
-      <span class="badge badge-warning">{{.TotalWarningAlerts}} aviso</span>
-      <span class="badge badge-info">{{.TotalInfoAlerts}} info</span>
+    <div class="status-list card-sub">
+      {{if gt .TotalCriticalAlerts 0}}<span class="badge badge-critical">{{.TotalCriticalAlerts}} {{if eq .TotalCriticalAlerts 1}}crítico{{else}}críticos{{end}}</span>{{end}}
+      {{if gt .TotalWarningAlerts 0}}<span class="badge badge-warning">{{.TotalWarningAlerts}} {{if eq .TotalWarningAlerts 1}}aviso{{else}}avisos{{end}}</span>{{end}}
+      {{if gt .TotalInfoAlerts 0}}<span class="badge badge-info">{{.TotalInfoAlerts}} info</span>{{end}}
     </div>
   </div>
 </div>
@@ -56,55 +56,53 @@
     <thead>
       <tr>
         <th>Usina</th>
-        <th>Geração de Ontem</th>
-        <th>Esperado</th>
-        <th>Desvio</th>
-        <th>Alertas Abertos</th>
+        <th class="num">Geração de ontem</th>
+        <th class="num">Esperado</th>
+        <th class="num">Desvio</th>
+        <th>Alertas abertos</th>
         <th>Última leitura válida</th>
         <th>Status</th>
-        <th>Ações</th>
       </tr>
     </thead>
     <tbody>
       {{range .Plants}}
       <tr>
         <td>
-          <a href="/plants/{{.Plant.ID}}" style="font-weight:600;">{{.Plant.Name}}</a>
-          <div style="font-size:0.75rem;color:var(--text-muted);">{{.Plant.Timezone}}</div>
+          <a href="/plants/{{.Plant.ID}}" class="strong">{{.Plant.Name}}</a>
         </td>
-        <td>
+        <td class="num">
           {{if .YesterdayStats.HasReadings}}
             <strong>{{formatFloat .YesterdayStats.MeasuredKWh 2}}</strong> kWh
           {{else}}
-            <span style="color:var(--text-muted);">-</span>
+            <span class="muted">-</span>
           {{end}}
         </td>
-        <td>
+        <td class="num">
           {{if .YesterdayStats.HasExpected}}
             {{formatFloat .YesterdayStats.ExpectedKWh 2}} kWh
           {{else}}
-            <span style="color:var(--text-muted);">-</span>
+            <span class="muted">-</span>
           {{end}}
         </td>
-        <td>
+        <td class="num">
           {{if .HasDeviation}}
-            <span style="font-weight:600;{{if lt .DeviationPct -15.0}}color:var(--danger);{{else if gt .DeviationPct 0.0}}color:var(--success);{{end}}">
+            <span class="strong {{if lt .DeviationPct -15.0}}text-danger{{else if gt .DeviationPct 0.0}}text-success{{end}}">
               {{if gt .DeviationPct 0.0}}+{{end}}{{formatPercent .DeviationPct}}
             </span>
           {{else}}
-            <span style="color:var(--text-muted);">-</span>
+            <span class="muted">-</span>
           {{end}}
         </td>
         <td>
           {{if eq .OpenAlertsCount 0}}
-            <span style="color:var(--text-muted);">0</span>
+            <span class="muted">0</span>
           {{else}}
-            <div style="display:inline-flex;gap:4px;">
+            <div class="status-list">
               {{if gt .CriticalAlertsCount 0}}
-              <span class="badge badge-critical">{{.CriticalAlertsCount}} crítico</span>
+              <span class="badge badge-critical">{{.CriticalAlertsCount}} {{if eq .CriticalAlertsCount 1}}crítico{{else}}críticos{{end}}</span>
               {{end}}
               {{if gt .WarningAlertsCount 0}}
-              <span class="badge badge-warning">{{.WarningAlertsCount}} aviso</span>
+              <span class="badge badge-warning">{{.WarningAlertsCount}} {{if eq .WarningAlertsCount 1}}aviso{{else}}avisos{{end}}</span>
               {{end}}
               {{if gt .InfoAlertsCount 0}}
               <span class="badge badge-info">{{.InfoAlertsCount}} info</span>
@@ -116,7 +114,7 @@
           {{if .YesterdayStats.LastMeasuredDate}}
             {{.YesterdayStats.LastMeasuredDate}}
           {{else}}
-            <span style="color:var(--text-muted);">-</span>
+            <span class="muted">-</span>
           {{end}}
         </td>
         <td>
@@ -131,9 +129,6 @@
           {{else}}
             <span class="badge badge-success">OK</span>
           {{end}}
-        </td>
-        <td>
-          <a href="/plants/{{.Plant.ID}}" class="btn btn-secondary btn-sm">Ver Usina</a>
         </td>
       </tr>
       {{end}}

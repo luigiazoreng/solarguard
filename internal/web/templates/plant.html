@@ -1,12 +1,12 @@
 {{define "content"}}
-<div style="margin-bottom:20px;display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px;">
+<div class="page-heading">
   <div>
-    <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
-      <a href="/" style="color:var(--text-muted);">&larr; Usinas</a>
-      <span style="color:var(--text-muted);">/</span>
-      <h1 style="margin:0;font-size:1.6rem;">{{.Plant.Name}}</h1>
+    <div class="breadcrumb">
+      <a href="/" class="muted">&larr; Usinas</a>
+      <span class="muted">/</span>
+      <h1>{{.Plant.Name}}</h1>
     </div>
-    <div style="color:var(--text-muted);font-size:0.875rem;">
+    <div class="muted">
       Fuso horário: <strong>{{.Plant.Timezone}}</strong>
       {{if and .Plant.Latitude .Plant.Longitude}}
         • Coord: ({{formatFloat (derefFloat .Plant.Latitude) 4}}, {{formatFloat (derefFloat .Plant.Longitude) 4}})
@@ -21,7 +21,7 @@
 <!-- Filtros de Período e Dispositivo -->
 <form method="GET" action="/plants/{{.Plant.ID}}" class="filters-bar">
   <div>
-    <label for="period" style="display:block;font-size:0.8rem;color:var(--text-muted);margin-bottom:4px;">Período</label>
+    <label for="period" class="field-label">Período</label>
     <select id="period" name="period" class="form-control" data-autosubmit>
       <option value="7" {{if eq .Period "7"}}selected{{end}}>Últimos 7 dias</option>
       <option value="30" {{if eq .Period "30"}}selected{{end}}>Últimos 30 dias</option>
@@ -30,7 +30,7 @@
     </select>
   </div>
   <div>
-    <label for="device" style="display:block;font-size:0.8rem;color:var(--text-muted);margin-bottom:4px;">Dispositivo</label>
+    <label for="device" class="field-label">Dispositivo</label>
     <select id="device" name="device" class="form-control" data-autosubmit>
       <option value="" {{if eq .SelectedDevice ""}}selected{{end}}>Todos os dispositivos</option>
       {{range .Devices}}
@@ -41,30 +41,30 @@
 </form>
 
 <!-- Cards de Métricas do Período -->
-<div class="grid">
+<div class="kpi-strip">
   <div class="card">
-    <div class="card-title">Energia Medida</div>
+    <div class="card-title">Energia medida</div>
     {{if .HasPeriodData}}
-    <div class="card-value">{{formatFloat .PeriodMeasured 1}} <span style="font-size:0.9rem;font-weight:normal;">kWh</span></div>
+    <div class="card-value">{{formatFloat .PeriodMeasured 1}} <span class="unit">kWh</span></div>
     {{else}}
     <div class="card-value">-</div>
     {{end}}
-    <div class="card-sub">{{.PeriodLabel}}{{if .DataUntilStr}} • <span class="badge badge-neutral" style="font-size:0.75rem;">Dados até {{.DataUntilStr}}</span>{{end}}</div>
+    <div class="card-sub">{{.PeriodLabel}}{{if .DataUntilStr}} • <span class="small badge badge-neutral">Dados até {{.DataUntilStr}}</span>{{end}}</div>
   </div>
   <div class="card">
     <div class="card-title">Medida x esperada</div>
     {{if .HasPaired}}
-      <div class="card-value">{{formatFloat .PairedMeasured 1}} / {{formatFloat .PairedExpected 1}} <span style="font-size:0.9rem;font-weight:normal;">kWh</span></div>
-      <div class="card-sub"><span style="{{if lt .PairedDeviation 0.0}}color:var(--danger);{{else if gt .PairedDeviation 0.0}}color:var(--success);{{end}} font-weight:600;">{{if gt .PairedDeviation 0.0}}+{{end}}{{formatPercent .PairedDeviation}}</span> • {{.PairedDeviceDays}} {{if eq .PairedDeviceDays 1}}dia-dispositivo{{else}}dias-dispositivo{{end}}</div>
+      <div class="card-value">{{formatFloat .PairedMeasured 1}} / {{formatFloat .PairedExpected 1}} <span class="unit">kWh</span></div>
+      <div class="card-sub"><span class="strong {{if lt .PairedDeviation 0.0}}text-danger{{else if gt .PairedDeviation 0.0}}text-success{{end}}">{{if gt .PairedDeviation 0.0}}+{{end}}{{formatPercent .PairedDeviation}}</span> • {{.PairedDeviceDays}} {{if eq .PairedDeviceDays 1}}dia-dispositivo{{else}}dias-dispositivo{{end}}</div>
     {{else}}
-      <div class="card-value" style="font-size:1.05rem;color:var(--text-muted);font-weight:500;">sem comparação disponível</div>
+      <div class="value-empty card-value">sem comparação disponível</div>
       <div class="card-sub">sem comparação disponível</div>
     {{end}}
   </div>
   <div class="card">
     <div class="card-title">Energia esperada sem medição válida</div>
     {{if .HasPeriodData}}
-    <div class="card-value" style="color:var(--warning);">{{formatFloat .PeriodLostEnergy 1}} <span style="font-size:0.9rem;font-weight:normal;">kWh</span></div>
+    <div class="text-warning card-value">{{formatFloat .PeriodLostEnergy 1}} <span class="unit">kWh</span></div>
     <div class="card-sub">Estimativa: pode ter sido gerada e não registrada.</div>
     {{else}}
     <div class="card-value">-</div>
@@ -72,7 +72,7 @@
     {{end}}
   </div>
   <div class="card">
-    <div class="card-title">Qualidade dos Dados</div>
+    <div class="card-title">Qualidade dos dados</div>
     {{if .HasPeriodData}}
     <div class="card-value">{{formatPercent .PeriodQualityPct}}</div>
     <div class="card-sub">{{.PeriodOKReadings}} de {{.PeriodTotalReadings}} {{if eq .TotalDevices 1}}dias válidos{{else}}dias-dispositivo válidos{{end}}</div>
@@ -85,35 +85,35 @@
 
 <!-- Gráfico com uPlot -->
 <div class="chart-wrapper">
-  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-    <h3 style="margin:0;font-size:1.05rem;">Série Temporal de Geração e Expectativa</h3>
-    <div style="font-size:0.8rem;color:var(--text-muted);">
-      <span style="display:inline-block;width:8px;height:8px;background:#2563eb;border-radius:50%;margin-right:4px;"></span>Medido (OK)
-      <span style="display:inline-block;width:8px;height:8px;background:#16a34a;border-radius:50%;margin-left:12px;margin-right:4px;"></span>Esperado
-      <span style="display:inline-block;width:8px;height:8px;background:#dc2626;border-radius:50%;margin-left:12px;margin-right:4px;"></span>! Falha / Não OK
-      <span style="display:inline-block;width:8px;height:8px;background:#d97706;border-radius:50%;margin-left:12px;margin-right:4px;"></span>Previsão
+  <div class="split">
+    <h3>Geração diária</h3>
+    <div class="legend">
+      <span><span class="legend-dot measured"></span>Medido (OK)</span>
+      <span><span class="legend-dot expected"></span>Esperado</span>
+      <span><span class="legend-dot invalid"></span>Leitura inválida</span>
+      <span><span class="legend-dot forecast"></span>Previsão</span>
     </div>
   </div>
 
-  <div id="plant-chart" data-series-url="/api/v1/plants/{{.Plant.ID}}/series?from={{.FromDate}}&to={{.ToDate}}&device={{.SelectedDevice}}" style="min-height:340px;">
-    <div style="text-align:center;padding:60px 0;color:var(--text-muted);">Carregando gráfico...</div>
+  <div id="plant-chart" data-series-url="/api/v1/plants/{{.Plant.ID}}/series?from={{.FromDate}}&to={{.ToDate}}&device={{.SelectedDevice}}" class="chart">
+    <div class="chart-loading">Carregando gráfico...</div>
   </div>
 
   <!-- Acessibilidade / Alternativa em Tabela -->
-  <details style="margin-top:16px;">
-    <summary style="cursor:pointer;font-weight:500;color:var(--primary);font-size:0.875rem;">Ver dados em tabela (alternativa acessível)</summary>
-    <div class="table-container" style="margin-top:12px;max-height:300px;overflow-y:auto;">
+  <details class="section">
+    <summary>Ver em tabela</summary>
+    <div class="fallback-table table-container">
       <table>
         <thead>
           <tr>
             <th>Data</th>
-            <th>Medido (kWh)</th>
-            <th>Esperado (kWh)</th>
-            <th>Qualidade / Previsão</th>
+            <th class="num">Medido (kWh)</th>
+            <th class="num">Esperado (kWh)</th>
+            <th>Qualidade / previsão</th>
           </tr>
         </thead>
         <tbody id="fallback-table-body">
-          <tr><td colspan="4" style="text-align:center;">Carregando dados...</td></tr>
+          <tr><td colspan="4" class="text-center">Carregando dados...</td></tr>
         </tbody>
       </table>
     </div>
@@ -121,40 +121,38 @@
 </div>
 
 <!-- Tabela de Dispositivos -->
-<div style="margin-top:32px;">
-  <h2 style="font-size:1.2rem;margin-bottom:12px;">Dispositivos da Usina</h2>
+<div class="section">
+  <h2>Dispositivos da usina</h2>
   <div class="table-container">
     <table>
       <thead>
         <tr>
           <th>Dispositivo</th>
-          <th>ID Externo</th>
-          <th>Capacidade</th>
-          <th>Área Painel</th>
-          <th>Eficiência</th>
+          <th>ID externo</th>
+          <th class="num">Capacidade</th>
+          <th class="num">Área de painel</th>
+          <th class="num">Eficiência</th>
           <th>Último contato</th>
-          <th>% OK</th>
+          <th class="num">% OK</th>
           <th>Status</th>
         </tr>
       </thead>
       <tbody>
         {{range .DeviceSummaries}}
         <tr>
-          <td style="font-weight:600;">{{.Device.Name}}</td>
+          <td class="strong">{{.Device.Name}}</td>
           <td><code>{{.Device.ExternalID}}</code></td>
-          <td>{{if .Device.CapacityKW}}{{formatFloat (derefFloat .Device.CapacityKW) 1}} kW{{else}}-{{end}}</td>
-          <td>{{if .Device.PanelAreaM2}}{{formatFloat (derefFloat .Device.PanelAreaM2) 1}} m²{{else}}-{{end}}</td>
-          <td>{{if .Device.Efficiency}}{{formatPercent (multiplyFloat (derefFloat .Device.Efficiency) 100.0)}}{{else}}-{{end}}</td>
+          <td class="num">{{if .Device.CapacityKW}}{{formatFloat (derefFloat .Device.CapacityKW) 1}} kW{{else}}-{{end}}</td>
+          <td class="num">{{if .Device.PanelAreaM2}}{{formatFloat (derefFloat .Device.PanelAreaM2) 1}} m²{{else}}-{{end}}</td>
+          <td class="num">{{if .Device.Efficiency}}{{formatPercent (multiplyFloat (derefFloat .Device.Efficiency) 100.0)}}{{else}}-{{end}}</td>
           <td>
             {{if .Device.LastSeenAt}}
               {{formatTime .Device.LastSeenAt $.Plant.Timezone}}
-            {{else if .LastReadingAt}}
-              {{formatTime .LastReadingAt $.Plant.Timezone}}
             {{else}}
               -
             {{end}}
           </td>
-          <td>
+          <td class="num">
             {{if gt .TotalReadings 0}}
               {{formatPercent (multiplyFloat (divideFloat .OKReadings .TotalReadings) 100.0)}}
             {{else}}
@@ -167,7 +165,7 @@
             {{else if and .Device.Online (not (derefBool .Device.Online))}}
               <span class="badge badge-critical">Offline</span>
             {{else}}
-              <span class="badge badge-success">Online</span>
+              <span class="muted">Não informado</span>
             {{end}}
           </td>
         </tr>
@@ -178,21 +176,21 @@
 </div>
 
 <!-- Seção do Modelo Numérico -->
-<div id="modelo" style="margin-top:36px;">
-  <h2 style="font-size:1.2rem;margin-bottom:8px;">Modelo Numérico de Referência</h2>
+<div id="modelo" class="section">
+  <h2>Modelo</h2>
 
   <div class="note-box">
-    <strong>Nota honesta:</strong> Métricas calculadas com o clima observado do dia. Elas medem a geração esperada, não uma previsão feita com antecedência.
+    Métricas calculadas com o clima observado do dia. Elas medem a geração esperada, não uma previsão feita com antecedência.
   </div>
 
   {{if .ActiveModel}}
-    <div class="card" style="margin-bottom:20px;">
-      <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:16px;">
+    <div class="section card">
+      <div class="split">
         <div>
-          <span style="font-size:0.8rem;text-transform:uppercase;color:var(--text-muted);font-weight:600;">Modelo Ativo</span>
-          <div style="font-size:1.25rem;font-weight:700;">{{.ActiveModel.Name}} (versão {{.ActiveModel.Version}})</div>
+          <span class="card-title">Modelo ativo</span>
+          <div class="model-name">{{.ActiveModel.Name}} (versão {{.ActiveModel.Version}})</div>
         </div>
-        <div style="font-size:0.875rem;color:var(--text-muted);text-align:right;">
+        <div class="muted">
           Ajustado em: {{formatTime (makeTimePtr .ActiveModel.TrainedAt) .Plant.Timezone}}<br>
           {{if and .ActiveModel.TrainStart .ActiveModel.TrainEnd}}
           Treino: {{formatDate (derefStr .ActiveModel.TrainStart)}} a {{formatDate (derefStr .ActiveModel.TrainEnd)}}
@@ -202,26 +200,26 @@
 
       <!-- Tabela Walk-Forward do ModelRun -->
       {{if .ModelMetrics}}
-      <h4 style="margin:0 0 8px 0;font-size:0.95rem;color:var(--text-muted);">Validação Temporal Walk-Forward</h4>
-      <div class="table-container" style="margin-bottom:0;">
+      <h4>Validação temporal</h4>
+      <div class="flush table-container">
         <table>
           <thead>
             <tr>
-              <th>Dispositivo / Agrupado</th>
-              <th>MAE (kWh)</th>
-              <th>RMSE (kWh)</th>
-              <th>R²</th>
-              <th>WAPE</th>
+              <th>Dispositivo / agrupado</th>
+              <th class="num">MAE (kWh)</th>
+              <th class="num">RMSE (kWh)</th>
+              <th class="num">R²</th>
+              <th class="num">WAPE</th>
             </tr>
           </thead>
           <tbody>
             {{range .ModelMetrics}}
-            <tr {{if eq .Label "Geral (Pooled)"}}style="font-weight:700;background:var(--bg);"{{end}}>
+            <tr {{if eq .Label "Geral (Pooled)"}}class="summary-row"{{end}}>
               <td>{{.Label}}</td>
-              <td>{{formatFloat .MAE 2}}</td>
-              <td>{{formatFloat .RMSE 2}}</td>
-              <td>{{formatFloat .R2 2}}</td>
-              <td>{{formatPercent .WAPE}}</td>
+              <td class="num">{{formatFloat .MAE 2}}</td>
+              <td class="num">{{formatFloat .RMSE 2}}</td>
+              <td class="num">{{formatFloat .R2 2}}</td>
+              <td class="num">{{formatPercent .WAPE}}</td>
             </tr>
             {{end}}
           </tbody>
@@ -233,7 +231,7 @@
     <div class="empty-state">
       <h3>Nenhum modelo ativo</h3>
       <p>Esta usina ainda não possui um modelo de geração ajustado. Execute o backtest na seção Gestão ou via CLI:</p>
-      <pre style="background:var(--bg);display:inline-block;padding:12px 16px;border-radius:6px;border:1px solid var(--border);text-align:left;font-size:0.85rem;margin:12px 0;">
+      <pre class="command">
 solarguard backtest --plant-id {{.Plant.ID}}
       </pre>
     </div>

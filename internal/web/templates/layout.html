@@ -17,16 +17,16 @@
   {{end}}
 
   <header class="navbar">
-    <a href="/" class="nav-brand">☀️ SolarGuard</a>
+    <a href="/" class="nav-brand">SolarGuard<small>Monitoramento solar</small></a>
     <nav>
       <ul class="nav-links">
-        <li><a href="/" {{if eq .ActiveNav "overview"}}class="active"{{end}}>Visão geral</a></li>
+        <li><a href="/" {{if eq .ActiveNav "overview"}}class="active"{{end}}>Usinas</a></li>
         <li><a href="/alerts" {{if eq .ActiveNav "alerts"}}class="active"{{end}}>Alertas</a></li>
         <li><a href="/reports" {{if eq .ActiveNav "reports"}}class="active"{{end}}>Relatórios</a></li>
         <li><a href="/manage" {{if eq .ActiveNav "manage"}}class="active"{{end}}>Gestão</a></li>
         {{if not .NoAuth}}
         <li>
-          <form action="/logout" method="POST" style="display:inline;">
+          <form action="/logout" method="POST" class="inline-form">
             <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
             <button type="submit" class="btn btn-secondary btn-sm">Sair</button>
           </form>

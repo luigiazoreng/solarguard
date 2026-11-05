@@ -6,23 +6,23 @@
   <title>Login - SolarGuard</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
-<body style="display:flex;align-items:center;justify-content:center;min-height:100vh;background:var(--bg);">
-  <div class="card" style="width:100%;max-width:380px;padding:32px 24px;">
-    <h2 style="margin-top:0;margin-bottom:8px;font-size:1.5rem;text-align:center;">☀️ SolarGuard</h2>
-    <p style="color:var(--text-muted);text-align:center;margin-bottom:24px;font-size:0.9rem;">Monitoramento Fotovoltaico</p>
+<body class="login-page">
+  <div class="login-card card">
+    <h2 class="login-title">SolarGuard</h2>
+    <p class="muted text-center">Monitoramento solar</p>
 
     {{if .Error}}
-    <div style="background:var(--danger-bg);color:var(--danger);padding:8px 12px;border-radius:6px;margin-bottom:16px;font-size:0.875rem;">
+    <div class="message message-error">
       {{.Error}}
     </div>
     {{end}}
 
     <form method="POST" action="/login">
       <div class="form-group">
-        <label for="password">Senha de Administrador</label>
+        <label for="password">Senha de administrador</label>
         <input type="password" id="password" name="password" class="form-control" required autofocus autocomplete="current-password">
       </div>
-      <button type="submit" class="btn" style="width:100%;margin-top:8px;">Entrar</button>
+      <button type="submit" class="login-submit btn">Entrar</button>
     </form>
   </div>
 </body>

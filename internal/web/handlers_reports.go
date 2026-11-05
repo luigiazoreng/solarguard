@@ -49,7 +49,7 @@ func (s *Server) handleReportsList(w http.ResponseWriter, r *http.Request) {
 
 	errMsg := r.URL.Query().Get("error")
 
-	data := s.baseTemplateData(r, "Relatórios Operacionais", "reports")
+	data := s.baseTemplateData(r, "Relatórios", "reports")
 	data["Reports"] = items
 	data["Plants"] = plants
 	data["DefaultFrom"] = defaultFrom
