@@ -10,11 +10,12 @@ Fontes: coleção pública no Postman e testes de leitura em `test.growatt.com` 
 ## Observado em produção (2026-11-04)
 
 - `lost` chega como **booleano**, não como número.
-- Nomes de plantas podem chegar com o caractere de substituição `U+FFFD` no lugar de letras acentuadas. Os bytes já vêm assim da API, então só dá para corrigir no cadastro da Growatt.
+- Nomes de plantas podem chegar com o caractere de substituição `U+FFFD` no lugar de letras acentuadas. Os bytes já vêm assim da API, então não dá para recuperar o nome original. Corrija no cadastro da Growatt ou no campo "Nome" da página Gestão. O nome corrigido no painel não é sobrescrito pela coleta.
 - `device/list` pode listar o mesmo inversor duas vezes, com tipos diferentes (1 e 4), com `count` igual a 1.
 - `device/inverter/day_energy` confere com `plant/energy` no inversor de tipo 1 e retorna **0 falso em inversores MIN (tipo 7)**. Para MIN, usar `POST /v1/device/tlx/tlx_data`: os registros vêm do mais novo para o mais antigo, e o `eacToday` do primeiro registro é o total do dia.
 - O limite também aceita chamadas em sequência para outros parâmetros: 35 chamadas de `day_energy` em 8 segundos, sem `10012`. Nos endpoints de MIN, o `10012` apareceu mesmo sem repetir os parâmetros, então pode haver limite por dispositivo.
 - `/v1/plant/list` exige um token com permissão de API. Sem isso, toda chamada responde `10011`.
+- Salvar um token em **Conta** gasta uma chamada de `plant/list`, e o resultado já alimenta a descoberta, sem repetir a chamada.
 - Carga histórica de 2026-01-01 a 2026-11-03: `day_energy` respondeu para todas as 307 datas nos inversores de tipo 1, e `tlx_data` só retornou os últimos 95 dias nos MIN. Para eles, coletar antes de perder dados.
 - Tipos sem verificação em produção: SPH, SPA e os demais. `day_energy` pode ter o mesmo problema neles.
 

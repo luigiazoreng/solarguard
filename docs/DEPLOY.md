@@ -4,22 +4,24 @@ O [docker-compose.yml](../docker-compose.yml) sobe um único container com o pai
 
 ## Subir
 
-1. No Dokploy, crie um serviço do tipo **Compose** apontando para este repositório, com o caminho `./docker-compose.yml`.
-2. Na aba **Environment**, defina a chave que criptografa os tokens das contas:
-
-   ```text
-   SOLARGUARD_SECRET_KEY=
-   ```
-
-   Gere com `openssl rand -base64 32` e guarde uma cópia fora da VPS. Se ela se perder, os dados continuam, mas cada conta precisa informar o token de novo.
+1. No Dokploy, crie um serviço do tipo **Compose** apontando para este repositório, com o branch `main` e o caminho `./docker-compose.yml`. Enquanto o repositório for privado, o Dokploy precisa ter acesso a ele pelo GitHub.
+2. Na aba **Environment**, defina as variáveis da tabela abaixo. Só a chave é obrigatória.
 3. Crie um registro `A` no DNS apontando o domínio para a VPS.
 4. Na aba **Domains**, adicione o domínio com o serviço `solarguard`, a porta `8080` e o HTTPS ligado com Let's Encrypt.
 5. Faça o deploy.
-6. Abra o domínio, crie uma conta e, em **Conta**, informe o token da Growatt. A coleta começa na hora, sem reiniciar nada.
+6. Abra o domínio, crie uma conta e, em **Conta**, informe o token da Growatt. A coleta começa sem reiniciar nada, e as primeiras leituras chegam em alguns minutos.
 
-Não publique a porta com `ports`. A variável `SOLARGUARD_TRUST_PROXY` faz o painel aceitar o endereço do cliente informado pelo proxy, então só o proxy pode alcançar a porta. Sem isso, alguém poderia fugir do bloqueio de senha.
+| Variável | Para que serve |
+|---|---|
+| `SOLARGUARD_SECRET_KEY` | Obrigatória. Criptografa os tokens das contas. Gere com `openssl rand -base64 32` e guarde uma cópia fora da VPS. Se ela se perder, os dados continuam, mas cada conta precisa informar o token de novo. |
+| `SOLARGUARD_ALLOW_SIGNUP` | `true` permite novos cadastros, `false` aceita só as contas que já existem. Padrão: `true`. |
+| `SOLARGUARD_MCP_TOKEN` | Liga o MCP em `/mcp`. Veja [Acesso por IA](#acesso-por-ia-mcp). |
 
-O cadastro fica aberto a quem acessar o domínio. Cada conta vê só as próprias usinas, mas consome recursos da VPS. Para fechar, crie as contas necessárias, defina `SOLARGUARD_ALLOW_SIGNUP=false` em **Environment** e faça um novo deploy. Quem já tem conta continua entrando. Não feche antes de criar a primeira conta, ou ninguém conseguirá entrar até a variável voltar para `true`.
+O Dokploy só lê essas variáveis no deploy, então faça um novo deploy depois de mudar alguma. O token da Growatt não vai aqui: cada conta o informa no painel.
+
+Não publique a porta com `ports`. O compose define `SOLARGUARD_TRUST_PROXY=true`, que faz o painel aceitar o endereço do cliente informado pelo proxy, então só o proxy pode alcançar a porta. Sem isso, alguém poderia fugir do bloqueio de senha.
+
+O cadastro fica aberto a quem acessar o domínio. Cada conta vê só as próprias usinas, mas consome recursos da VPS. Para fechar, crie as contas necessárias e defina `SOLARGUARD_ALLOW_SIGNUP=false`. Quem já tem conta continua entrando. Não feche antes de criar a primeira conta, ou ninguém conseguirá entrar até a variável voltar para `true`.
 
 Mantenha **um único coletor por token**: pare qualquer `serve` ou `collect` que use o mesmo token em outra máquina.
 
@@ -73,9 +75,13 @@ Pelo terminal do container no Dokploy. Para buscar o histórico de uma planta, u
 solarguard backfill --source NOME_DA_FONTE --plant-id 1 --from 2026-01-01 --to 2026-10-31
 ```
 
-Reinicie o serviço depois: o `serve` processa a fila, e a coleta é lenta de propósito por causa dos limites da API.
+O comando só enfileira as tarefas. O serviço em execução as processa sem reiniciar, desde que a conta tenha um token salvo. A coleta é lenta de propósito por causa dos limites da API. Para acompanhar:
 
-Não há recuperação de senha por e-mail. Para trocar a senha de uma conta, rode o comando abaixo e digite a nova senha:
+```bash
+solarguard queue --source NOME_DA_FONTE
+```
+
+Não há recuperação de senha por e-mail. Para trocar a senha de uma conta, rode o comando abaixo e digite a nova senha. As sessões já abertas continuam válidas até reiniciar o serviço.
 
 ```bash
 solarguard user-reset-password --email pessoa@exemplo.com
@@ -91,14 +97,30 @@ Faça backup com frequência e guarde as cópias fora da VPS. Alguns inversores 
 
 O Dokploy faz backup de volumes nomeados para um destino S3, em **Volume Backups**. Ligue a opção de desligar o container durante a cópia. Para restaurar, o Dokploy exige que o volume de destino não exista e que os containers estejam parados.
 
-Sem S3, gere uma cópia no terminal do container e baixe o arquivo:
+Sem S3, gere uma cópia e tire-a do container. Na VPS, descubra o nome do container, que contém `solarguard`:
 
 ```bash
-sqlite3 /data/solarguard.db ".backup /data/backup.db"
+docker ps --filter name=solarguard
+docker exec NOME_DO_CONTAINER sqlite3 /data/solarguard.db ".backup /data/backup.db"
+docker cp NOME_DO_CONTAINER:/data/backup.db ./solarguard-backup.db
 ```
+
+Depois copie `solarguard-backup.db` para fora da VPS. Para restaurar essa cópia, use os passos de [Levar um banco existente](#levar-um-banco-existente).
 
 Os tokens no backup estão criptografados. Guarde a `SOLARGUARD_SECRET_KEY` separada dele.
 
 ## Atualizar
 
 Faça um novo deploy. As migrações do banco rodam ao iniciar. Faça um backup antes: uma migração aplicada não é desfeita ao voltar para a versão anterior. As sessões ficam em memória, então cada deploy pede login de novo.
+
+## Problemas comuns
+
+| O que aparece | O que fazer |
+|---|---|
+| O serviço não inicia | Veja o log. `SOLARGUARD_SECRET_KEY` precisa ter pelo menos 32 caracteres, e `SOLARGUARD_ALLOW_SIGNUP` precisa ser `true` ou `false`. |
+| "Não foi possível validar o token na Growatt" | Confira o token e se ele tem permissão de API. Sem ela, a Growatt recusa todas as chamadas. |
+| "A Growatt só aceita esta consulta a cada 5 minutos" | Aguarde e tente de novo. Nada foi salvo. |
+| "As usinas deste token já estão vinculadas a outra conta" | Entre na conta que já tem essas usinas. |
+| Status **Parada** em **Conta** | A chave mudou e o token salvo não abre mais. Informe o token de novo. |
+| "Muitas tentativas" no login | O bloqueio dura 15 minutos e vale só para aquele cliente. |
+| Nenhuma geração esperada | Cada modelo precisa de pelo menos 60 dias de leituras válidas. Busque o histórico com `backfill`. |
