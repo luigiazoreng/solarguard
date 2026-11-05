@@ -19,7 +19,7 @@ O [docker-compose.yml](../docker-compose.yml) sobe um único container com o pai
 
 Não publique a porta com `ports`. A variável `SOLARGUARD_TRUST_PROXY` faz o painel aceitar o endereço do cliente informado pelo proxy, então só o proxy pode alcançar a porta. Sem isso, alguém poderia fugir do bloqueio de senha.
 
-O cadastro é aberto a quem acessar o domínio. Cada conta vê só as próprias usinas, mas consome recursos da VPS.
+O cadastro fica aberto a quem acessar o domínio. Cada conta vê só as próprias usinas, mas consome recursos da VPS. Para fechar, crie as contas necessárias, defina `SOLARGUARD_ALLOW_SIGNUP=false` em **Environment** e faça um novo deploy. Quem já tem conta continua entrando. Não feche antes de criar a primeira conta, ou ninguém conseguirá entrar até a variável voltar para `true`.
 
 Mantenha **um único coletor por token**: pare qualquer `serve` ou `collect` que use o mesmo token em outra máquina.
 
