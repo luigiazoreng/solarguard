@@ -172,7 +172,12 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		hasTotalDev = true
 	}
 
-	data := s.baseTemplateData(r, "Visão Geral", "overview")
+	referenceDate := now.AddDate(0, 0, -1).Format("2006-01-02")
+	if len(rows) > 0 {
+		referenceDate = rows[0].YesterdayStats.YesterdayDate
+	}
+	data := s.baseTemplateData(r, "Usinas", "overview")
+	data["ReferenceDate"] = referenceDate
 	data["Plants"] = rows
 	data["TotalPlants"] = len(plants)
 	data["TotalDevices"] = totalDevices

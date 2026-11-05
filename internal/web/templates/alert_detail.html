@@ -1,58 +1,58 @@
 {{define "content"}}
-<div style="margin-bottom:20px;">
-  <a href="/alerts" style="color:var(--text-muted);">&larr; Voltar para Alertas</a>
-  <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px;margin-top:8px;">
+<div class="section">
+  <a href="/alerts" class="muted">&larr; Voltar para alertas</a>
+  <div class="split">
     <div>
-      <h1 style="margin:0 0 4px 0;font-size:1.6rem;">{{.Alert.Title}}</h1>
-      <div style="color:var(--text-muted);font-size:0.875rem;">
+      <h1>{{.Alert.Title}}</h1>
+      <div class="muted">
         Usina: <strong>{{.Plant.Name}}</strong>
         {{if .Device}} • Dispositivo: <strong>{{.Device.Name}} ({{.Device.ExternalID}})</strong>{{end}}
         • Regra: <strong>{{labelsRule .Alert.Rule}}</strong>
       </div>
     </div>
-    <div style="display:flex;gap:8px;align-items:center;">
+    <div class="actions">
       {{if eq .Alert.Severity "critical"}}
-        <span class="badge badge-critical" style="font-size:0.9rem;padding:4px 10px;">Crítico</span>
+        <span class="badge badge-critical">Crítico</span>
       {{else if eq .Alert.Severity "warning"}}
-        <span class="badge badge-warning" style="font-size:0.9rem;padding:4px 10px;">Aviso</span>
+        <span class="badge badge-warning">Aviso</span>
       {{else}}
-        <span class="badge badge-info" style="font-size:0.9rem;padding:4px 10px;">Info</span>
+        <span class="badge badge-info">Info</span>
       {{end}}
 
       <div id="alert-status-badge">
         {{if eq .Alert.Status "open"}}
-          <span class="badge badge-critical" style="font-size:0.9rem;padding:4px 10px;">Aberto</span>
+          <span class="badge badge-critical">Aberto</span>
         {{else if eq .Alert.Status "ack"}}
-          <span class="badge badge-warning" style="font-size:0.9rem;padding:4px 10px;">Reconhecido</span>
+          <span class="badge badge-warning">Reconhecido</span>
         {{else}}
-          <span class="badge badge-success" style="font-size:0.9rem;padding:4px 10px;">Resolvido</span>
+          <span class="badge badge-success">Resolvido</span>
         {{end}}
       </div>
     </div>
   </div>
 </div>
 
-<div class="note-box" style="border-left-color:var(--warning);">
+<div class="note-warning note-box">
   <strong>Aviso:</strong> Alerta é um indício para análise, não um diagnóstico.
 </div>
 
-<div class="grid" style="margin-bottom:24px;">
+<div class="section grid">
   <div class="card">
-    <div class="card-title">Período do Incidente</div>
-    <div class="card-value" style="font-size:1.15rem;">{{formatDate .Alert.FirstDate}} a {{formatDate .Alert.LastDate}}</div>
+    <div class="card-title">Período do incidente</div>
+    <div class="value-small card-value">{{formatDate .Alert.FirstDate}} a {{formatDate .Alert.LastDate}}</div>
     <div class="card-sub">Detectado em: {{.DetectedOn}}</div>
   </div>
 
   <div class="card">
-    <div class="card-title">Gerenciar Incidente</div>
-    <div id="alert-actions" style="margin-top:8px;">
+    <div class="card-title">Ações do incidente</div>
+    <div id="alert-actions" class="section">
       <form id="action-form">
         <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-        <div style="margin-bottom:10px;">
-          <label for="note-input" style="display:block;font-size:0.8rem;color:var(--text-muted);margin-bottom:4px;">Anotação de Análise</label>
+        <div class="form-group">
+          <label for="note-input" class="field-label">Anotação de análise</label>
           <input type="text" id="note-input" name="note" value="{{.Alert.Note}}" class="form-control" placeholder="Adicione uma nota sobre a ação tomada...">
         </div>
-        <div style="display:flex;gap:8px;">
+        <div class="actions">
           {{if eq .Alert.Status "open"}}
           <button type="button" class="btn btn-secondary btn-sm"
                   hx-post="/alerts/{{.Alert.ID}}/ack"
@@ -69,7 +69,7 @@
             Resolver
           </button>
           {{else}}
-          <span style="color:var(--success);font-weight:600;font-size:0.9rem;">Incidente finalizado como resolvido.</span>
+          <span class="text-success strong">Incidente finalizado como resolvido.</span>
           {{end}}
         </div>
       </form>
@@ -78,23 +78,23 @@
 </div>
 
 <!-- Tabela de Evidências ou Detalhes Offline -->
-<h3 style="font-size:1.15rem;margin-bottom:8px;">Evidência Determinística</h3>
+<h3>Evidência</h3>
 
 {{if .IsDeviceOffline}}
-<div class="card" style="margin-bottom:24px;">
-  <div style="font-size:1.05rem;margin-bottom:8px;">
+<div class="section card">
+  <div class="section">
     <strong>Último contato:</strong> {{.LastContactStr}}
   </div>
-  <div style="font-size:1.05rem;margin-bottom:12px;color:var(--danger);font-weight:600;">
+  <div class="text-danger strong">
     {{if lt .DaysOffline 1}}Sem comunicação há menos de 1 dia{{else}}Sem comunicação há {{.DaysOffline}} {{if eq .DaysOffline 1}}dia{{else}}dias{{end}}{{end}}
   </div>
-  <div class="note-box" style="margin:0;background:var(--card-bg);border-color:var(--border);">
+  <div class="flush note-box">
     {{.OfflineDisclaimer}}
   </div>
 </div>
 {{else if .EvidenceValues}}
   {{if .IsCapped}}
-  <div style="margin-bottom:8px;font-size:0.875rem;color:var(--text-muted);font-weight:500;">
+  <div class="muted">
     Mostrando 30 de {{.TotalValues}} dias
   </div>
   {{end}}
@@ -103,9 +103,9 @@
       <thead>
         <tr>
           <th>Data</th>
-          <th>Valor Medido (kWh)</th>
-          <th>Esperado (kWh)</th>
-          <th>Mediana dos Pares</th>
+          <th class="num">Valor medido (kWh)</th>
+          <th class="num">Esperado (kWh)</th>
+          <th class="num">Mediana dos pares</th>
           <th>Motivo</th>
         </tr>
       </thead>
@@ -113,9 +113,9 @@
         {{range .EvidenceValues}}
         <tr>
           <td>{{formatDate .Date}}</td>
-          <td>{{if .Value}}{{formatFloat (derefFloat .Value) 2}}{{else}}-{{end}}</td>
-          <td>{{if .Expected}}{{formatFloat (derefFloat .Expected) 2}}{{else}}-{{end}}</td>
-          <td>{{if .PeerMedian}}{{formatFloat (derefFloat .PeerMedian) 2}}{{else}}-{{end}}</td>
+          <td class="num">{{if .Value}}{{formatFloat (derefFloat .Value) 2}}{{else}}-{{end}}</td>
+          <td class="num">{{if .Expected}}{{formatFloat (derefFloat .Expected) 2}}{{else}}-{{end}}</td>
+          <td class="num">{{if .PeerMedian}}{{formatFloat (derefFloat .PeerMedian) 2}}{{else}}-{{end}}</td>
           <td>{{if .Reason}}{{labelsReason .Reason}}{{else}}-{{end}}</td>
         </tr>
         {{end}}
@@ -123,19 +123,19 @@
     </table>
   </div>
 {{else}}
-<div class="card" style="margin-bottom:24px;">
-  <pre style="margin:0;font-size:0.85rem;white-space:pre-wrap;">{{.Alert.EvidenceJSON}}</pre>
+<div class="section card">
+  <pre class="evidence-json">{{.Alert.EvidenceJSON}}</pre>
 </div>
 {{end}}
 
 <!-- Parâmetros da Regra -->
 {{if .EvidenceParams}}
-<h3 style="font-size:1.15rem;margin-bottom:8px;margin-top:24px;">Parâmetros Utilizados na Detecção</h3>
-<div class="card" style="margin-bottom:24px;">
-  <dl style="margin:0;display:grid;grid-template-columns:auto 1fr;gap:8px 16px;">
+<h3>Parâmetros da detecção</h3>
+<div class="section card">
+  <dl class="details-list">
     {{range $k, $v := .EvidenceParams}}
-    <dt style="font-weight:600;color:var(--text-muted);">{{labelsParam $k}}:</dt>
-    <dd style="margin:0;"><code>{{$v}}</code></dd>
+    <dt class="muted strong">{{labelsParam $k}}:</dt>
+    <dd class="flush"><code>{{$v}}</code></dd>
     {{end}}
   </dl>
 </div>

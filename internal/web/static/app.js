@@ -95,7 +95,7 @@ function renderPlot(container, data) {
             const cx = u.valToPos(ts, "x", true);
             const cy = u.bbox.top + u.bbox.height - 10;
 
-            ctx.fillStyle = "#dc2626";
+            ctx.fillStyle = "#c94343";
             ctx.beginPath();
             ctx.arc(cx, cy, 5, 0, 2 * Math.PI);
             ctx.fill();
@@ -113,14 +113,14 @@ function renderPlot(container, data) {
     },
   };
 
-  const isDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
-  const textColor = isDark ? "#94a3b8" : "#64748b";
-  const gridColor = isDark ? "#1e293b" : "#e2e8f0";
+  const textColor = "#637282";
+  const gridColor = "#dce4ea";
 
   const opts = {
     width: container.clientWidth || 800,
     height: 340,
     plugins: [notOkPlugin],
+    bands: [{ series: [4, 3], fill: "rgba(22, 134, 92, 0.10)" }],
     scales: {
       x: { time: true },
       y: { auto: true },
@@ -163,33 +163,31 @@ function renderPlot(container, data) {
       { label: "Data" },
       {
         label: "Medido (kWh)",
-        stroke: "#2563eb",
+        stroke: "#1e67b1",
         width: 2,
         points: { show: true, size: 5 },
         spanGaps: false,
       },
       {
         label: "Esperado (kWh)",
-        stroke: "#16a34a",
+        stroke: "#16865c",
         width: 2,
         dash: [4, 4],
         spanGaps: false,
       },
       {
-        label: "Banda Inf (90%)",
-        stroke: "rgba(22, 163, 74, 0.2)",
+        label: "Limite inferior (90%)",
+        stroke: "rgba(22, 134, 92, 0.2)",
         width: 1,
       },
       {
-        label: "Banda Sup (90%)",
-        stroke: "rgba(22, 163, 74, 0.2)",
+        label: "Limite superior (90%)",
+        stroke: "rgba(22, 134, 92, 0.2)",
         width: 1,
-        fill: "rgba(22, 163, 74, 0.08)",
-        band: true,
       },
       {
         label: "Previsão (kWh)",
-        stroke: "#d97706",
+        stroke: "#e58b20",
         width: 2,
         dash: [6, 3],
         points: { show: true, size: 4 },
@@ -230,13 +228,13 @@ function populateFallbackTable(data) {
     let qualStatus = `<span class="badge badge-success">OK</span>`;
     if (notOkMap[d]) {
       const nok = notOkMap[d];
-      qualStatus = `<span class="badge badge-warning" title="${escapeHtml(nok.reason)}">${escapeHtml(nok.reason || "não ok")}</span>`;
+      qualStatus = `<span class="badge badge-critical" title="${escapeHtml(nok.reason)}">${escapeHtml(nok.reason || "não ok")}</span>`;
     }
 
     tr.innerHTML = `
       <td>${escapeHtml(formatDatePt(d))}</td>
-      <td>${medOK}</td>
-      <td>${exp}</td>
+      <td class="num">${medOK}</td>
+      <td class="num">${exp}</td>
       <td>${qualStatus}</td>
     `;
     tbody.appendChild(tr);
@@ -250,8 +248,8 @@ function populateFallbackTable(data) {
 
     tr.innerHTML = `
       <td>${escapeHtml(formatDatePt(d))}</td>
-      <td>-</td>
-      <td>-</td>
+      <td class="num">-</td>
+      <td class="num">-</td>
       <td><span class="badge badge-info">Previsão: ${val} kWh</span></td>
     `;
     tbody.appendChild(tr);

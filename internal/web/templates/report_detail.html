@@ -1,24 +1,24 @@
 {{define "content"}}
-<div style="margin-bottom:20px;">
-  <a href="/reports" style="color:var(--text-muted);">&larr; Voltar para Relatórios</a>
-  <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px;margin-top:8px;">
+<div class="section">
+  <a href="/reports" class="muted">&larr; Voltar para relatórios</a>
+  <div class="split">
     <div>
-      <h1 style="margin:0 0 4px 0;font-size:1.6rem;">{{.Report.Title}}</h1>
-      <div style="color:var(--text-muted);font-size:0.875rem;">
+      <h1>{{.Report.Title}}</h1>
+      <div class="muted">
         Usina: <strong>{{.PlantName}}</strong>
         • Período: <strong>{{formatDate .Report.PeriodStart}} a {{formatDate .Report.PeriodEnd}}</strong>
         • Autor: <strong>{{.Report.Author}}</strong>
       </div>
     </div>
-    <div style="display:flex;gap:8px;align-items:center;">
+    <div class="actions">
       {{if eq .Report.Status "draft"}}
-        <span class="badge badge-warning" style="font-size:0.9rem;padding:4px 10px;">Rascunho</span>
-        <form method="POST" action="/reports/{{.Report.ID}}/finalize" style="display:inline;">
+        <span class="badge badge-warning">Rascunho</span>
+        <form method="POST" action="/reports/{{.Report.ID}}/finalize" class="inline-form">
           <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-          <button type="submit" class="btn btn-sm">Finalizar Relatório</button>
+          <button type="submit" class="btn btn-sm">Finalizar relatório</button>
         </form>
       {{else}}
-        <span class="badge badge-success" style="font-size:0.9rem;padding:4px 10px;">Finalizado</span>
+        <span class="badge badge-success">Finalizado</span>
       {{end}}
     </div>
   </div>
@@ -26,11 +26,11 @@
 
 {{if eq .Report.Author "ai"}}
 <div class="banner-ai">
-  🤖 <strong>Rascunho gerado por IA: revise antes de usar</strong>
+  <strong>Rascunho gerado por IA: revise antes de usar</strong>
 </div>
 {{end}}
 
-<div class="card" style="padding:28px;line-height:1.7;">
+<div class="report-panel card">
   <div class="report-body markdown-body">
     {{renderMarkdown .Report.BodyMD}}
   </div>

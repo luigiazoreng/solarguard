@@ -121,7 +121,7 @@ func (s *Server) handleAlertsList(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	data := s.baseTemplateData(r, "Alertas e Incidentes", "alerts")
+	data := s.baseTemplateData(r, "Alertas", "alerts")
 	data["Alerts"] = items
 	data["Plants"] = plants
 	data["FilterPlantID"] = filterPlantID

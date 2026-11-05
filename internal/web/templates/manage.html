@@ -1,50 +1,50 @@
 {{define "content"}}
-<div style="margin-bottom:20px;">
-  <h1 style="margin:0 0 4px 0;font-size:1.6rem;">Gestão e Configurações</h1>
-  <p style="color:var(--text-muted);margin:0;">Fontes de dados, fila de sincronização, regras de alerta e execução da pipeline</p>
+<div class="section">
+  <h1>Gestão</h1>
+  <p class="muted">Cadastro de usinas, fontes, sincronização e regras de alerta.</p>
 </div>
 
 {{if .SuccessMessage}}
-<div style="background:var(--success-bg);color:var(--success);border:1px solid var(--success);padding:10px 16px;border-radius:6px;margin-bottom:20px;font-weight:500;">
-  ✓ {{.SuccessMessage}}
+<div class="message message-success">
+  {{.SuccessMessage}}
 </div>
 {{end}}
 {{if .ErrorMessage}}
-<div style="background:var(--danger-bg);color:var(--danger);border:1px solid var(--danger);padding:10px 16px;border-radius:6px;margin-bottom:20px;font-weight:500;">
-  ⚠️ {{.ErrorMessage}}
+<div class="message message-error">
+  {{.ErrorMessage}}
 </div>
 {{end}}
 
 <!-- 1. Execução Manual da Pipeline -->
-<div class="card" style="margin-bottom:32px;">
-  <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px;margin-bottom:16px;">
+<div class="section card">
+  <div class="split">
     <div>
-      <h3 style="margin:0 0 4px 0;font-size:1.15rem;">Pipeline Noturna de Processamento</h3>
-      <p style="color:var(--text-muted);margin:0;font-size:0.875rem;">Sincroniza clima, classifica qualidade, calcula previsões e avalia alertas.</p>
+      <h3>Processamento diário</h3>
+      <p class="muted">Sincroniza clima, classifica qualidade, calcula previsões e avalia alertas.</p>
     </div>
-    <form method="POST" action="/manage/pipeline/run" style="display:flex;gap:8px;align-items:center;">
+    <form method="POST" action="/manage/pipeline/run" class="actions">
       <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-      <select name="plant_id" class="form-control" style="width:auto;">
+      <select name="plant_id" class="input-auto form-control">
         <option value="">Todas as usinas</option>
         {{range .Plants}}
         <option value="{{.ID}}">{{.Name}}</option>
         {{end}}
       </select>
-      <button type="submit" class="btn btn-sm">Executar Pipeline</button>
+      <button type="submit" class="btn btn-sm">Executar processamento</button>
     </form>
   </div>
 
-  <h4 style="margin:0 0 8px 0;font-size:0.95rem;color:var(--text-muted);">Últimas Execuções da Pipeline</h4>
+  <h4>Últimas execuções</h4>
   {{if eq (len .PipelineRuns) 0}}
-    <div style="color:var(--text-muted);font-size:0.875rem;padding:8px 0;">Nenhuma execução registrada ainda.</div>
+    <div class="muted">Nenhuma execução registrada ainda.</div>
   {{else}}
-    <div class="table-container" style="margin-bottom:0;">
+    <div class="flush table-container">
       <table>
         <thead>
           <tr>
             <th>Usina</th>
-            <th>Data Local</th>
-            <th>Status Geral</th>
+            <th>Data local</th>
+            <th>Status geral</th>
             <th>Etapas</th>
             <th>Iniciado em</th>
             <th>Concluído em</th>
@@ -53,7 +53,7 @@
         <tbody>
           {{range .PipelineRuns}}
           <tr>
-            <td style="font-weight:600;">{{.PlantName}}</td>
+            <td class="strong">{{.PlantName}}</td>
             <td>{{formatDate .Run.LocalDate}}</td>
             <td>
               {{if eq .Run.Status "success"}}
@@ -65,7 +65,7 @@
               {{end}}
             </td>
             <td>
-              <div style="display:inline-flex;gap:4px;flex-wrap:wrap;">
+              <div class="status-list">
                 {{range .Steps}}
                   {{if eq .Status "ok"}}
                     <span class="badge badge-success" title="{{labelsPipelineStep .Name}}: {{.DurationMS}}ms">{{labelsPipelineStep .Name}}</span>
@@ -88,30 +88,30 @@
 </div>
 
 <!-- 2. Fontes e Fila de Tarefas -->
-<div style="margin-bottom:32px;">
-  <h2 style="font-size:1.25rem;margin-bottom:12px;">Fontes de Dados e Fila</h2>
+<div class="section">
+  <h2>Fontes e fila de sincronização</h2>
   <div class="table-container">
     <table>
       <thead>
         <tr>
           <th>Fonte</th>
           <th>Tipo</th>
-          <th>Variável de Credencial</th>
-          <th>Status da Credencial</th>
-          <th>Pendentes</th>
-          <th>Concluídas</th>
-          <th>Falhas</th>
-          <th>Próxima Execução</th>
+          <th>Variável de credencial</th>
+          <th>Status da credencial</th>
+          <th class="num">Pendentes</th>
+          <th class="num">Concluídas</th>
+          <th class="num">Falhas</th>
+          <th>Próxima execução</th>
         </tr>
       </thead>
       <tbody>
         {{range .SourceStats}}
         <tr>
-          <td style="font-weight:600;">{{.Source.Name}}</td>
+          <td class="strong">{{.Source.Name}}</td>
           <td><code>{{.Source.Kind}}</code></td>
           <td>
             {{if or (eq .Source.Kind "file") (eq .Source.Kind "planilha") (eq .Source.CredentialEnv "")}}
-              <span style="color:var(--text-muted);">-</span>
+              <span class="muted">-</span>
             {{else}}
               <code>{{.Source.CredentialEnv}}</code>
             {{end}}
@@ -125,9 +125,9 @@
               <span class="badge badge-critical">Não configurada</span>
             {{end}}
           </td>
-          <td>{{.Stats.Pending}}</td>
-          <td>{{.Stats.Done}}</td>
-          <td>
+          <td class="num">{{.Stats.Pending}}</td>
+          <td class="num">{{.Stats.Done}}</td>
+          <td class="num">
             {{if gt .Stats.Failed 0}}
               <span class="badge badge-critical">{{.Stats.Failed}}</span>
             {{else}}
@@ -142,37 +142,41 @@
   </div>
 </div>
 
-<!-- 3. Editar Coordenadas e Fuso Horário de Usinas -->
-<div style="margin-bottom:32px;">
-  <h2 style="font-size:1.25rem;margin-bottom:12px;">Localização e Fuso Horário das Usinas</h2>
+<!-- 3. Editar Coordenadas e Fuso horário de Usinas -->
+<div class="section">
+  <h2>Cadastro de usinas</h2>
   <div class="table-container">
     <table>
       <thead>
         <tr>
-          <th>Usina</th>
-          <th>Fuso Horário</th>
-          <th>Latitude</th>
-          <th>Longitude</th>
+          <th>Nome</th>
+          <th>Fuso horário</th>
+          <th class="num">Latitude</th>
+          <th class="num">Longitude</th>
           <th>Ação</th>
         </tr>
       </thead>
       <tbody>
         {{range .Plants}}
         <tr>
-          <form method="POST" action="/manage/plants/{{.ID}}">
-            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
-            <td style="font-weight:600;">{{.Name}}</td>
+          <form id="plant-{{.ID}}" method="POST" action="/manage/plants/{{.ID}}">
+            <input form="plant-{{.ID}}" type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
             <td>
-              <input type="text" name="timezone" class="form-control" value="{{.Timezone}}" style="width:180px;" required>
+              <label for="plant-name-{{.ID}}" class="sr-only">Nome</label>
+              <input form="plant-{{.ID}}" id="plant-name-{{.ID}}" type="text" name="name" class="form-control input-name" value="{{.Name}}">
+              {{if hasCorruptedName .Name}}<div class="name-warning">Nome corrompido pela origem. Corrija aqui.</div>{{end}}
             </td>
             <td>
-              <input type="text" inputmode="decimal" name="latitude" class="form-control" value="{{if .Latitude}}{{printFloat (derefFloat .Latitude)}}{{end}}" style="width:120px;" placeholder="-23.5">
+              <input form="plant-{{.ID}}" type="text" name="timezone" class="input-timezone form-control" value="{{.Timezone}}" required>
+            </td>
+            <td class="num">
+              <input form="plant-{{.ID}}" type="text" inputmode="decimal" name="latitude" class="input-number form-control" value="{{if .Latitude}}{{printFloat (derefFloat .Latitude)}}{{end}}" placeholder="-23.5">
+            </td>
+            <td class="num">
+              <input form="plant-{{.ID}}" type="text" inputmode="decimal" name="longitude" class="input-number form-control" value="{{if .Longitude}}{{printFloat (derefFloat .Longitude)}}{{end}}" placeholder="-46.6">
             </td>
             <td>
-              <input type="text" inputmode="decimal" name="longitude" class="form-control" value="{{if .Longitude}}{{printFloat (derefFloat .Longitude)}}{{end}}" style="width:120px;" placeholder="-46.6">
-            </td>
-            <td>
-              <button type="submit" class="btn btn-secondary btn-sm">Salvar</button>
+              <button form="plant-{{.ID}}" type="submit" class="btn btn-secondary btn-sm">Salvar</button>
             </td>
           </form>
         </tr>
@@ -183,38 +187,38 @@
 </div>
 
 <!-- 4. Editar Especificações dos Dispositivos -->
-<div style="margin-bottom:32px;">
-  <h2 style="font-size:1.25rem;margin-bottom:12px;">Especificações Físicas dos Dispositivos</h2>
+<div class="section">
+  <h2>Especificações dos dispositivos</h2>
   <div class="table-container">
     <table>
       <thead>
         <tr>
           <th>Usina</th>
           <th>Dispositivo</th>
-          <th>Capacidade (kW)</th>
-          <th>Área Painel (m²)</th>
-          <th>Eficiência (0-1)</th>
+          <th class="num">Capacidade (kW)</th>
+          <th class="num">Área de painel (m²)</th>
+          <th class="num">Eficiência (0-1)</th>
           <th>Ação</th>
         </tr>
       </thead>
       <tbody>
         {{range .AllDevices}}
         <tr>
-          <form method="POST" action="/manage/devices/{{.Device.ID}}">
-            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+          <form id="device-{{.Device.ID}}" method="POST" action="/manage/devices/{{.Device.ID}}">
+            <input form="device-{{.Device.ID}}" type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
             <td>{{.PlantName}}</td>
-            <td style="font-weight:600;">{{.Device.Name}}</td>
-            <td>
-              <input type="text" inputmode="decimal" name="capacity_kw" class="form-control" value="{{if .Device.CapacityKW}}{{printFloat (derefFloat .Device.CapacityKW)}}{{end}}" style="width:110px;" placeholder="ex: 15.0">
+            <td class="strong">{{.Device.Name}}</td>
+            <td class="num">
+              <input form="device-{{.Device.ID}}" type="text" inputmode="decimal" name="capacity_kw" class="input-number form-control" value="{{if .Device.CapacityKW}}{{printFloat (derefFloat .Device.CapacityKW)}}{{end}}" placeholder="ex: 15.0">
+            </td>
+            <td class="num">
+              <input form="device-{{.Device.ID}}" type="text" inputmode="decimal" name="panel_area_m2" class="input-number form-control" value="{{if .Device.PanelAreaM2}}{{printFloat (derefFloat .Device.PanelAreaM2)}}{{end}}" placeholder="ex: 42.0">
+            </td>
+            <td class="num">
+              <input form="device-{{.Device.ID}}" type="text" inputmode="decimal" name="efficiency" class="input-number form-control" value="{{if .Device.Efficiency}}{{printFloat (derefFloat .Device.Efficiency)}}{{end}}" placeholder="ex: 0.18">
             </td>
             <td>
-              <input type="text" inputmode="decimal" name="panel_area_m2" class="form-control" value="{{if .Device.PanelAreaM2}}{{printFloat (derefFloat .Device.PanelAreaM2)}}{{end}}" style="width:110px;" placeholder="ex: 42.0">
-            </td>
-            <td>
-              <input type="text" inputmode="decimal" name="efficiency" class="form-control" value="{{if .Device.Efficiency}}{{printFloat (derefFloat .Device.Efficiency)}}{{end}}" style="width:100px;" placeholder="ex: 0.18">
-            </td>
-            <td>
-              <button type="submit" class="btn btn-secondary btn-sm">Salvar</button>
+              <button form="device-{{.Device.ID}}" type="submit" class="btn btn-secondary btn-sm">Salvar</button>
             </td>
           </form>
         </tr>
@@ -225,12 +229,12 @@
 </div>
 
 <!-- 5. Configuração de Regras de Alerta por Usina -->
-<div style="margin-bottom:32px;">
-  <h2 style="font-size:1.25rem;margin-bottom:8px;">Parâmetros das Regras de Alerta</h2>
-  <p style="color:var(--text-muted);font-size:0.875rem;margin-bottom:12px;">Ative ou desative regras e defina limites por usina em formato JSON. Com <code>{}</code>, a regra usa os valores padrão.</p>
+<div class="section">
+  <h2>Regras de alerta</h2>
+  <p class="muted">Ative ou desative regras e defina limites por usina em formato JSON. Com <code>{}</code>, a regra usa os valores padrão.</p>
 
   <details>
-  <summary style="cursor:pointer;font-weight:500;color:var(--primary);margin-bottom:12px;">Mostrar regras de todas as usinas</summary>
+  <summary>Mostrar regras de todas as usinas</summary>
   <div class="table-container">
     <table>
       <thead>
@@ -245,24 +249,24 @@
       <tbody>
         {{range .RuleRows}}
         <tr>
-          <form method="POST" action="/manage/rules">
-            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
-            <input type="hidden" name="rule" value="{{.Rule}}">
-            <input type="hidden" name="plant_id" value="{{.PlantID}}">
+          <form id="rule-{{.PlantID}}-{{.Rule}}" method="POST" action="/manage/rules">
+            <input form="rule-{{.PlantID}}-{{.Rule}}" type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+            <input form="rule-{{.PlantID}}-{{.Rule}}" type="hidden" name="rule" value="{{.Rule}}">
+            <input form="rule-{{.PlantID}}-{{.Rule}}" type="hidden" name="plant_id" value="{{.PlantID}}">
 
-            <td style="font-weight:600;">{{labelsRule .Rule}}</td>
+            <td class="strong">{{labelsRule .Rule}}</td>
             <td>{{.PlantName}}</td>
             <td>
-              <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;">
-                <input type="checkbox" name="enabled" value="true" {{if .Enabled}}checked{{end}}>
+              <label class="checkbox-label">
+                <input form="rule-{{.PlantID}}-{{.Rule}}" type="checkbox" name="enabled" value="true" {{if .Enabled}}checked{{end}}>
                 {{if .Enabled}}Ativa{{else}}Inativa{{end}}
               </label>
             </td>
             <td>
-              <input type="text" name="params_json" class="form-control" value="{{.ParamsJSON}}" style="width:300px;font-family:monospace;font-size:0.8rem;" required>
+              <input form="rule-{{.PlantID}}-{{.Rule}}" type="text" name="params_json" class="input-json form-control" value="{{.ParamsJSON}}" required>
             </td>
             <td>
-              <button type="submit" class="btn btn-secondary btn-sm">Salvar Regra</button>
+              <button form="rule-{{.PlantID}}-{{.Rule}}" type="submit" class="btn btn-secondary btn-sm">Salvar regra</button>
             </td>
           </form>
         </tr>

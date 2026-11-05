@@ -147,7 +147,7 @@ func (s *Store) UpsertPlant(ctx context.Context, p domain.Plant) (domain.Plant, 
 	if err != nil {
 		return domain.Plant{}, fmt.Errorf("upsert plant: %w", err)
 	}
-	return p, nil
+	return s.GetPlant(ctx, p.ID)
 }
 
 // UpsertDevice creates or refreshes a device, keyed by plant and external ID.
@@ -187,7 +187,7 @@ func (s *Store) UpsertDevice(ctx context.Context, d domain.Device) (domain.Devic
 
 // ListPlants returns every plant, ordered by name.
 func (s *Store) ListPlants(ctx context.Context) ([]domain.Plant, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, source_id, external_id, name, timezone, latitude, longitude, peak_power_kw, weather_location_id
+	rows, err := s.db.QueryContext(ctx, `SELECT id, source_id, external_id, COALESCE(name_override, name) AS name, timezone, latitude, longitude, peak_power_kw, weather_location_id
 		FROM plants ORDER BY name, id`)
 	if err != nil {
 		return nil, fmt.Errorf("list plants: %w", err)
@@ -207,7 +207,7 @@ func (s *Store) ListPlants(ctx context.Context) ([]domain.Plant, error) {
 // GetPlant returns one plant or ErrNotFound.
 func (s *Store) GetPlant(ctx context.Context, id int64) (domain.Plant, error) {
 	var p domain.Plant
-	err := s.db.QueryRowContext(ctx, `SELECT id, source_id, external_id, name, timezone, latitude, longitude, peak_power_kw, weather_location_id
+	err := s.db.QueryRowContext(ctx, `SELECT id, source_id, external_id, COALESCE(name_override, name) AS name, timezone, latitude, longitude, peak_power_kw, weather_location_id
 		FROM plants WHERE id = ?`, id).
 		Scan(&p.ID, &p.SourceID, &p.ExternalID, &p.Name, &p.Timezone, &p.Latitude, &p.Longitude, &p.PeakPowerKW, &p.WeatherLocationID)
 	if errors.Is(err, sql.ErrNoRows) {

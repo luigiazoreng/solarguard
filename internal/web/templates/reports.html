@@ -1,23 +1,23 @@
 {{define "content"}}
-<div style="margin-bottom:20px;">
-  <h1 style="margin:0 0 4px 0;font-size:1.6rem;">Relatórios Operacionais</h1>
-  <p style="color:var(--text-muted);margin:0;">Análises consolidadas e pareceres de geração fotovoltaica</p>
+<div class="section">
+  <h1>Relatórios</h1>
+  <p class="muted">Consulte os relatórios ou gere uma análise por usina e período.</p>
 </div>
 
 {{if .ErrorMessage}}
-<div style="background:var(--warning-bg);color:var(--warning);border:1px solid var(--warning);padding:12px 16px;border-radius:6px;margin-bottom:20px;font-weight:500;">
-  ⚠️ {{.ErrorMessage}}
+<div class="message message-warning">
+  {{.ErrorMessage}}
 </div>
 {{end}}
 
-<!-- Formulário para Gerar Relatório -->
-<div class="card" style="margin-bottom:24px;">
-  <h3 style="margin-top:0;margin-bottom:12px;font-size:1.1rem;">Gerar Novo Relatório</h3>
-  <form method="POST" action="/reports/generate" style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;">
+<!-- Formulário para Gerar relatório -->
+<div class="section card">
+  <h3>Gerar relatório</h3>
+  <form method="POST" action="/reports/generate" class="filters-bar flush">
     <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
 
-    <div style="flex:1;min-width:180px;">
-      <label for="plant_id" style="display:block;font-size:0.8rem;color:var(--text-muted);margin-bottom:4px;">Usina</label>
+    <div class="filter-field">
+      <label for="plant_id" class="field-label">Usina</label>
       <select id="plant_id" name="plant_id" class="form-control" required>
         {{range .Plants}}
         <option value="{{.ID}}">{{.Name}}</option>
@@ -25,8 +25,8 @@
       </select>
     </div>
 
-    <div style="flex:1;min-width:140px;">
-      <label for="kind" style="display:block;font-size:0.8rem;color:var(--text-muted);margin-bottom:4px;">Tipo</label>
+    <div class="filter-field">
+      <label for="kind" class="field-label">Tipo</label>
       <select id="kind" name="kind" class="form-control" required>
         <option value="weekly">Semanal</option>
         <option value="monthly">Mensal</option>
@@ -34,24 +34,24 @@
       </select>
     </div>
 
-    <div style="flex:1;min-width:130px;">
-      <label for="from" style="display:block;font-size:0.8rem;color:var(--text-muted);margin-bottom:4px;">Data Inicial</label>
+    <div class="filter-field">
+      <label for="from" class="field-label">Data inicial</label>
       <input type="date" id="from" name="from" class="form-control" value="{{.DefaultFrom}}" required>
     </div>
 
-    <div style="flex:1;min-width:130px;">
-      <label for="to" style="display:block;font-size:0.8rem;color:var(--text-muted);margin-bottom:4px;">Data Final</label>
+    <div class="filter-field">
+      <label for="to" class="field-label">Data final</label>
       <input type="date" id="to" name="to" class="form-control" value="{{.DefaultTo}}" required>
     </div>
 
     <div>
-      <button type="submit" class="btn">Gerar Relatório</button>
+      <button type="submit" class="btn">Gerar relatório</button>
     </div>
   </form>
 </div>
 
 <!-- Tabela de Relatórios -->
-<h3 style="font-size:1.15rem;margin-bottom:8px;">Relatórios Gerados</h3>
+<h3>Relatórios gerados</h3>
 {{if eq (len .Reports) 0}}
 <div class="empty-state">
   <h3>Nenhum relatório encontrado</h3>
@@ -74,7 +74,7 @@
     <tbody>
       {{range .Reports}}
       <tr>
-        <td style="font-weight:600;">
+        <td class="strong">
           <a href="/reports/{{.Report.ID}}">{{.Report.Title}}</a>
         </td>
         <td>{{.PlantName}}</td>

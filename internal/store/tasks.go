@@ -95,7 +95,7 @@ func (s *Store) ListSources(ctx context.Context) ([]domain.Source, error) {
 
 // ListPlantsBySource returns all plants for a source ordered by name, id.
 func (s *Store) ListPlantsBySource(ctx context.Context, sourceID int64) ([]domain.Plant, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, source_id, external_id, name, timezone, latitude, longitude, peak_power_kw, weather_location_id
+	rows, err := s.db.QueryContext(ctx, `SELECT id, source_id, external_id, COALESCE(name_override, name) AS name, timezone, latitude, longitude, peak_power_kw, weather_location_id
 		FROM plants WHERE source_id = ? ORDER BY name, id`, sourceID)
 	if err != nil {
 		return nil, fmt.Errorf("list plants by source: %w", err)
@@ -115,7 +115,7 @@ func (s *Store) ListPlantsBySource(ctx context.Context, sourceID int64) ([]domai
 // GetPlantByExternalID returns a plant by source ID and external ID.
 func (s *Store) GetPlantByExternalID(ctx context.Context, sourceID int64, externalID string) (domain.Plant, error) {
 	var p domain.Plant
-	err := s.db.QueryRowContext(ctx, `SELECT id, source_id, external_id, name, timezone, latitude, longitude, peak_power_kw, weather_location_id
+	err := s.db.QueryRowContext(ctx, `SELECT id, source_id, external_id, COALESCE(name_override, name) AS name, timezone, latitude, longitude, peak_power_kw, weather_location_id
 		FROM plants WHERE source_id = ? AND external_id = ?`, sourceID, externalID).
 		Scan(&p.ID, &p.SourceID, &p.ExternalID, &p.Name, &p.Timezone, &p.Latitude, &p.Longitude, &p.PeakPowerKW, &p.WeatherLocationID)
 	if errors.Is(err, sql.ErrNoRows) {
