@@ -72,3 +72,24 @@ func TestPlantNameOverrideLength(t *testing.T) {
 		t.Fatalf("refused edit changed name: %q err=%v", got.Name, err)
 	}
 }
+
+func TestPlantSaveWithUnchangedNameIsNotACorrection(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	p, _ := seed(t, s, "B")
+	lat := 1.5
+	if err := s.UpdatePlantDetails(ctx, p.ID, p.Name, "", &lat, nil); err != nil {
+		t.Fatal(err)
+	}
+	p.Name = "Nome novo da origem"
+	if _, err := s.UpsertPlant(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetPlant(ctx, p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "Nome novo da origem" {
+		t.Errorf("name %q: saving coordinates must not freeze the provider's name", got.Name)
+	}
+}

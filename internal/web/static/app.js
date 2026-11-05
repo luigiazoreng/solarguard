@@ -228,7 +228,7 @@ function populateFallbackTable(data) {
     let qualStatus = `<span class="badge badge-success">OK</span>`;
     if (notOkMap[d]) {
       const nok = notOkMap[d];
-      qualStatus = `<span class="badge badge-critical" title="${escapeHtml(nok.reason)}">${escapeHtml(nok.reason || "não ok")}</span>`;
+      qualStatus = `<span class="badge badge-critical" >${escapeHtml(nok.reason_label || "leitura inválida")}</span>`;
     }
 
     tr.innerHTML = `

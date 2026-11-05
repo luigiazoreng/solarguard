@@ -148,8 +148,6 @@
           <td>
             {{if .Device.LastSeenAt}}
               {{formatTime .Device.LastSeenAt $.Plant.Timezone}}
-            {{else if .LastReadingAt}}
-              {{formatTime .LastReadingAt $.Plant.Timezone}}
             {{else}}
               -
             {{end}}
@@ -167,7 +165,7 @@
             {{else if and .Device.Online (not (derefBool .Device.Online))}}
               <span class="badge badge-critical">Offline</span>
             {{else}}
-              <span class="badge badge-success">Online</span>
+              <span class="muted">Não informado</span>
             {{end}}
           </td>
         </tr>

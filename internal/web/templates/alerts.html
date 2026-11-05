@@ -71,7 +71,6 @@
         <th>Status</th>
         <th>Período</th>
         <th>Detectado em</th>
-        <th>Ações</th>
       </tr>
     </thead>
     <tbody>
@@ -100,11 +99,8 @@
             <span class="badge badge-success">Resolvido</span>
           {{end}}
         </td>
-        <td>{{formatDate .Alert.FirstDate}} a {{formatDate .Alert.LastDate}}</td>
+        <td>{{formatDate .Alert.FirstDate}}{{if ne .Alert.FirstDate .Alert.LastDate}} a {{formatDate .Alert.LastDate}}{{end}}</td>
         <td>{{.DetectedOn}}</td>
-        <td>
-          <a href="/alerts/{{.Alert.ID}}" class="btn btn-secondary btn-sm">Detalhes</a>
-        </td>
       </tr>
       {{end}}
     </tbody>

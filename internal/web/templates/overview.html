@@ -38,8 +38,8 @@
       <span>{{.TotalOpenAlerts}}</span>
     </div>
     <div class="status-list card-sub">
-      {{if gt .TotalCriticalAlerts 0}}<span class="badge badge-critical">{{.TotalCriticalAlerts}} crítico</span>{{end}}
-      {{if gt .TotalWarningAlerts 0}}<span class="badge badge-warning">{{.TotalWarningAlerts}} aviso</span>{{end}}
+      {{if gt .TotalCriticalAlerts 0}}<span class="badge badge-critical">{{.TotalCriticalAlerts}} {{if eq .TotalCriticalAlerts 1}}crítico{{else}}críticos{{end}}</span>{{end}}
+      {{if gt .TotalWarningAlerts 0}}<span class="badge badge-warning">{{.TotalWarningAlerts}} {{if eq .TotalWarningAlerts 1}}aviso{{else}}avisos{{end}}</span>{{end}}
       {{if gt .TotalInfoAlerts 0}}<span class="badge badge-info">{{.TotalInfoAlerts}} info</span>{{end}}
     </div>
   </div>
@@ -99,10 +99,10 @@
           {{else}}
             <div class="status-list">
               {{if gt .CriticalAlertsCount 0}}
-              <span class="badge badge-critical">{{.CriticalAlertsCount}} crítico</span>
+              <span class="badge badge-critical">{{.CriticalAlertsCount}} {{if eq .CriticalAlertsCount 1}}crítico{{else}}críticos{{end}}</span>
               {{end}}
               {{if gt .WarningAlertsCount 0}}
-              <span class="badge badge-warning">{{.WarningAlertsCount}} aviso</span>
+              <span class="badge badge-warning">{{.WarningAlertsCount}} {{if eq .WarningAlertsCount 1}}aviso{{else}}avisos{{end}}</span>
               {{end}}
               {{if gt .InfoAlertsCount 0}}
               <span class="badge badge-info">{{.InfoAlertsCount}} info</span>

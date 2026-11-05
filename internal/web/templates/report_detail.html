@@ -7,7 +7,7 @@
       <div class="muted">
         Usina: <strong>{{.PlantName}}</strong>
         • Período: <strong>{{formatDate .Report.PeriodStart}} a {{formatDate .Report.PeriodEnd}}</strong>
-        • Autor: <strong>{{.Report.Author}}</strong>
+        • Autor: <strong>{{if eq .Report.Author "ai"}}IA{{else if eq .Report.Author "system"}}Sistema{{else}}Usuário{{end}}</strong>
       </div>
     </div>
     <div class="actions">

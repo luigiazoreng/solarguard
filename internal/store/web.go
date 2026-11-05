@@ -241,17 +241,18 @@ func (s *Store) UpdateDevice(ctx context.Context, id int64, capacityKW, panelAre
 }
 
 // UpdatePlantDetails updates the display name, timezone and coordinates,
-// keeping existing values for nil/empty arguments. Discovery owns plants.name.
+// keeping existing values for nil/empty arguments. Discovery owns plants.name,
+// so a save that leaves the name as it is does not count as a correction.
 func (s *Store) UpdatePlantDetails(ctx context.Context, id int64, name, timezone string, lat, lon *float64) error {
 	if utf8.RuneCountInString(name) > 120 {
 		return errors.New("nome deve ter no máximo 120 caracteres")
 	}
 	res, err := s.db.ExecContext(ctx, `UPDATE plants SET
-		name_override = COALESCE(NULLIF(?, ''), name_override),
+		name_override = CASE WHEN ? IN ('', COALESCE(name_override, name)) THEN name_override ELSE ? END,
 		timezone = COALESCE(NULLIF(?, ''), timezone),
 		latitude = COALESCE(?, latitude),
 		longitude = COALESCE(?, longitude)
-		WHERE id = ?`, name, timezone, lat, lon, id)
+		WHERE id = ?`, name, name, timezone, lat, lon, id)
 	if err != nil {
 		return fmt.Errorf("update plant details %d: %w", id, err)
 	}
