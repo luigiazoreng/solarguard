@@ -90,6 +90,7 @@ func (s *Server) handleReportDetail(w http.ResponseWriter, r *http.Request) {
 	data := s.baseTemplateData(r, rep.Title, "reports")
 	data["Report"] = rep
 	data["PlantName"] = pName
+	data["View"] = BuildReportView(rep.BodyMD, ForecastFromDataJSON(rep.DataJSON))
 
 	if err := s.render(w, "report_detail", data); err != nil {
 		s.cfg.Logger.Error("render report detail", "err", err)

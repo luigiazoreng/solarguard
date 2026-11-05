@@ -62,9 +62,9 @@
   <table>
     <thead>
       <tr>
-        <th>Título</th>
-        <th>Usina</th>
+        <th>Relatório</th>
         <th>Período</th>
+        <th>Tipo</th>
         <th>Autor</th>
         <th>Status</th>
         <th>Criado em</th>
@@ -73,12 +73,13 @@
     </thead>
     <tbody>
       {{range .Reports}}
-      <tr>
-        <td class="strong">
+      <tr{{if eq .Report.Status "draft"}} class="row-draft"{{end}}>
+        <td class="cell-title">
           <a href="/reports/{{.Report.ID}}">{{.Report.Title}}</a>
+          <div class="cell-sub">{{.PlantName}}</div>
         </td>
-        <td>{{.PlantName}}</td>
-        <td>{{formatDate .Report.PeriodStart}} a {{formatDate .Report.PeriodEnd}}</td>
+        <td class="date-range">{{formatDate .Report.PeriodStart}} a {{formatDate .Report.PeriodEnd}}</td>
+        <td>{{if eq .Report.Kind "weekly"}}Semanal{{else if eq .Report.Kind "monthly"}}Mensal{{else if eq .Report.Kind "period"}}Período{{else}}{{.Report.Kind}}{{end}}</td>
         <td>
           {{if eq .Report.Author "ai"}}
             <span class="badge badge-info">IA</span>
@@ -95,7 +96,7 @@
             <span class="badge badge-success">Final</span>
           {{end}}
         </td>
-        <td>{{formatTime (makeTimePtr .Report.CreatedAt) "America/Sao_Paulo"}}</td>
+        <td class="nowrap">{{formatTime (makeTimePtr .Report.CreatedAt) "America/Sao_Paulo"}}</td>
         <td>
           <a href="/reports/{{.Report.ID}}" class="btn btn-secondary btn-sm">Abrir</a>
         </td>
