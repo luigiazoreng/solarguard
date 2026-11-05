@@ -11,6 +11,7 @@
 # Build e ferramentas
 /bin/
 /.worktrees/
+/.claude/
 ml/.venv/
 __pycache__/
 *.pyc
