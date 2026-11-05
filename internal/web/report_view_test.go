@@ -6,7 +6,6 @@ import (
 	"io"
 	"math"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -184,11 +183,11 @@ func TestBuildReportView_FreeFormBodiesAndEscaping(t *testing.T) {
 
 func fetchReportPage(t *testing.T, st *store.Store, rep store.Report) (int, string) {
 	t.Helper()
-	srv, err := web.NewServer(web.Config{Addr: "127.0.0.1:8080", Store: st})
+	srv, err := web.NewServer(web.Config{Store: st})
 	if err != nil {
 		t.Fatal(err)
 	}
-	ts := httptest.NewServer(srv.Handler())
+	ts := ownerServer(t, st, srv)
 	defer ts.Close()
 	saved, err := st.InsertReport(context.Background(), rep)
 	if err != nil {
@@ -278,8 +277,8 @@ func TestReportsList_ShowsKindAndPlant(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	srv, _ := web.NewServer(web.Config{Addr: "127.0.0.1:8080", Store: st})
-	ts := httptest.NewServer(srv.Handler())
+	srv, _ := web.NewServer(web.Config{Store: st})
+	ts := ownerServer(t, st, srv)
 	defer ts.Close()
 	resp, err := http.Get(ts.URL + "/reports")
 	if err != nil {
