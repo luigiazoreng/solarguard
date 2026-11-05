@@ -57,6 +57,7 @@ set -a; . ./.env; set +a
 | `SOLARGUARD_DB` | Caminho do banco. Padrão: `./data/solarguard.db`. |
 | `SOLARGUARD_ADDR` | Endereço do painel. Padrão: `127.0.0.1:8080`. |
 | `SOLARGUARD_MCP_TOKEN` | Liga o MCP em `/mcp`, com acesso a todas as contas. Sem ela, a rota responde 404. |
+| `SOLARGUARD_ALLOW_SIGNUP` | `true` permite novos cadastros, `false` aceita só as contas que já existem. Padrão: `true`. |
 | `SOLARGUARD_TRUST_PROXY` | Use `true` só quando a porta for alcançável apenas pelo proxy reverso. Faz o bloqueio de senha valer por cliente. |
 | `SOLARGUARD_GROWATT_BASE_URL` | Endereço da API da Growatt para novos tokens. Padrão: `https://openapi.growatt.com`. |
 

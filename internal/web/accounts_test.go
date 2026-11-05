@@ -792,3 +792,45 @@ func TestAccountShowsWhenSavedTokenIsNotCollecting(t *testing.T) {
 		t.Error("the page claims to be syncing while no collector runs")
 	}
 }
+
+func TestSignupCanBeClosed(t *testing.T) {
+	st := newWebTestStore(t)
+	createUser(t, st, testEmail, "senha-certa-aqui")
+	ts := rawServer(t, web.Config{Store: st, SignupClosed: true})
+	client, err := newJarClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := client.Get(ts.URL + "/signup")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusFound || resp.Header.Get("Location") != "/login" {
+		t.Errorf("GET /signup: status %d, location %q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+
+	form := url.Values{"email": {"nova@example.com"}, "password": {"senha-bem-longa"}, "confirm": {"senha-bem-longa"}}
+	code, body := postForm(t, client, ts.URL+"/signup", form)
+	if code != http.StatusForbidden || !strings.Contains(body, "Novos cadastros estão desativados") {
+		t.Errorf("POST /signup: status %d", code)
+	}
+	if _, err := st.GetUserByEmail(context.Background(), "nova@example.com"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("a closed signup created an account: %v", err)
+	}
+
+	if _, loginPage := getPage(t, client, ts.URL+"/login"); strings.Contains(loginPage, `href="/signup"`) {
+		t.Error("the login page offers a signup that is closed")
+	}
+	if code, _ := postForm(t, client, ts.URL+"/login", url.Values{"email": {testEmail}, "password": {"senha-certa-aqui"}}); code != http.StatusSeeOther {
+		t.Errorf("existing account cannot log in: status %d", code)
+	}
+}
+
+func TestLoginPageOffersSignupWhenOpen(t *testing.T) {
+	ts := rawServer(t, web.Config{Store: newWebTestStore(t)})
+	if _, body := getPage(t, http.DefaultClient, ts.URL+"/login"); !strings.Contains(body, `href="/signup"`) {
+		t.Error("the login page does not offer signup")
+	}
+}

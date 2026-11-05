@@ -26,12 +26,13 @@ var staticFS embed.FS
 var templatesFS embed.FS
 
 type Config struct {
-	MCPToken   string
-	TrustProxy bool // the port is reachable only through a reverse proxy
-	Store      *store.Store
-	Tokens     *ingest.Manager // nil: accounts cannot add provider tokens
-	Logger     *slog.Logger
-	Now        func() time.Time
+	MCPToken     string
+	TrustProxy   bool // the port is reachable only through a reverse proxy
+	SignupClosed bool // only existing accounts can enter
+	Store        *store.Store
+	Tokens       *ingest.Manager // nil: accounts cannot add provider tokens
+	Logger       *slog.Logger
+	Now          func() time.Time
 }
 
 type Server struct {

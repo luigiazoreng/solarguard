@@ -7,6 +7,8 @@ services:
       # informar o token de novo.
       SOLARGUARD_SECRET_KEY: ${SOLARGUARD_SECRET_KEY:?defina SOLARGUARD_SECRET_KEY}
       SOLARGUARD_MCP_TOKEN: ${SOLARGUARD_MCP_TOKEN:-}
+      # Use false para aceitar só as contas que já existem.
+      SOLARGUARD_ALLOW_SIGNUP: ${SOLARGUARD_ALLOW_SIGNUP:-true}
       # A porta só é alcançável pelo proxy reverso. Não publique com "ports".
       SOLARGUARD_TRUST_PROXY: "true"
     expose:

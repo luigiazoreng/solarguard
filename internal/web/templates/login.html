@@ -26,7 +26,9 @@
       </div>
       <button type="submit" class="login-submit btn">Entrar</button>
     </form>
+    {{if .SignupOpen}}
     <p class="login-alt">Ainda não tem conta? <a href="/signup">Criar conta</a></p>
+    {{end}}
   </div>
 </body>
 </html>

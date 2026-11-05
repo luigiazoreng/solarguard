@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/luigiazoreng/solarguard/internal/ingest"
@@ -20,6 +21,21 @@ import (
 
 func init() {
 	register("serve", "inicia o servidor web, ingestão e pipeline de agendamento", runServe)
+}
+
+// allowSignupFromEnv reads SOLARGUARD_ALLOW_SIGNUP. Signup is open by default,
+// because a new installation needs its first account. A typo must not leave it
+// open by accident, so an invalid value stops the server.
+func allowSignupFromEnv() (bool, error) {
+	value := os.Getenv("SOLARGUARD_ALLOW_SIGNUP")
+	if value == "" {
+		return true, nil
+	}
+	allow, err := strconv.ParseBool(value)
+	if err != nil {
+		return false, fmt.Errorf("SOLARGUARD_ALLOW_SIGNUP deve ser true ou false, recebido %q", value)
+	}
+	return allow, nil
 }
 
 func runServe(ctx context.Context, args []string) error {
@@ -36,6 +52,11 @@ func runServe(ctx context.Context, args []string) error {
 	}
 
 	mcpToken := os.Getenv("SOLARGUARD_MCP_TOKEN")
+
+	allowSignup, err := allowSignupFromEnv()
+	if err != nil {
+		return err
+	}
 
 	// Without the key, no account could save or read a token.
 	box, err := secrets.FromEnv()
@@ -56,11 +77,12 @@ func runServe(ctx context.Context, args []string) error {
 	defer collectors.Wait()
 
 	cfg := web.Config{
-		MCPToken:   mcpToken,
-		TrustProxy: os.Getenv("SOLARGUARD_TRUST_PROXY") == "true",
-		Store:      st,
-		Tokens:     collectors,
-		Logger:     logger,
+		MCPToken:     mcpToken,
+		TrustProxy:   os.Getenv("SOLARGUARD_TRUST_PROXY") == "true",
+		SignupClosed: !allowSignup,
+		Store:        st,
+		Tokens:       collectors,
+		Logger:       logger,
 	}
 
 	srv, err := web.NewServer(cfg)

@@ -118,7 +118,7 @@ func (s *Server) hasSession(r *http.Request) bool {
 
 func (s *Server) renderEntry(w http.ResponseWriter, page string, status int, email, errMsg string) {
 	w.WriteHeader(status)
-	err := s.render(w, page, map[string]any{"Email": email, "Error": errMsg, "MinPassword": minPassword})
+	err := s.render(w, page, map[string]any{"Email": email, "Error": errMsg, "MinPassword": minPassword, "SignupOpen": !s.cfg.SignupClosed})
 	if err != nil {
 		s.cfg.Logger.Error("render account entry", "page", page, "err", err)
 	}
@@ -172,10 +172,19 @@ func (s *Server) handleSignupPage(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", http.StatusFound)
 		return
 	}
+	if s.cfg.SignupClosed {
+		http.Redirect(w, r, "/login", http.StatusFound)
+		return
+	}
 	s.renderEntry(w, "signup", http.StatusOK, "", "")
 }
 
 func (s *Server) handleSignupSubmit(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.SignupClosed {
+		s.renderEntry(w, "login", http.StatusForbidden, "", "Novos cadastros estão desativados.")
+		return
+	}
+
 	email := NormalizeEmail(r.PostFormValue("email"))
 	password := r.PostFormValue("password")
 	clientIP := ClientIP(r, s.cfg.TrustProxy)
