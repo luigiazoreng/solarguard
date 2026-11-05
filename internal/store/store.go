@@ -112,20 +112,16 @@ func (s *Store) EnsureSource(ctx context.Context, src domain.Source) (domain.Sou
 	if src.ConfigJSON == "" {
 		src.ConfigJSON = "{}"
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO sources (kind, name, config_json, credential_env, enabled, created_at)
-		VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (name) DO NOTHING`,
-		src.Kind, src.Name, src.ConfigJSON, src.CredentialEnv, boolToInt(src.Enabled), formatTime(s.now()))
+	_, err := s.db.ExecContext(ctx, `INSERT INTO sources (kind, name, config_json, credential_env, enabled, created_at, user_id, credential_enc)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (name) DO NOTHING`,
+		src.Kind, src.Name, src.ConfigJSON, src.CredentialEnv, boolToInt(src.Enabled), formatTime(s.now()), src.UserID, src.CredentialEnc)
 	if err != nil {
 		return domain.Source{}, fmt.Errorf("ensure source: %w", err)
 	}
-	var out domain.Source
-	var enabled int
-	err = s.db.QueryRowContext(ctx, `SELECT id, kind, name, config_json, credential_env, enabled FROM sources WHERE name = ?`, src.Name).
-		Scan(&out.ID, &out.Kind, &out.Name, &out.ConfigJSON, &out.CredentialEnv, &enabled)
+	out, err := s.GetSourceByName(ctx, src.Name)
 	if err != nil {
 		return domain.Source{}, fmt.Errorf("read source: %w", err)
 	}
-	out.Enabled = enabled != 0
 	return out, nil
 }
 

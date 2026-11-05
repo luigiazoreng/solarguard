@@ -1,0 +1,52 @@
+{{define "content"}}
+<div class="section">
+  <h1>Conta</h1>
+  <p class="muted">{{.UserEmail}}</p>
+</div>
+
+{{if .SuccessMessage}}<div class="message message-success">{{.SuccessMessage}}</div>{{end}}
+{{if .ErrorMessage}}<div class="message message-error">{{.ErrorMessage}}</div>{{end}}
+
+<div class="card account-section">
+  <h2>Token da Growatt</h2>
+  <div class="account-status">
+    {{if and .HasToken (not .Collecting)}}
+      <span class="badge badge-critical">Parada</span>
+      <span class="muted">O servidor não conseguiu usar o token salvo. Informe o token de novo.</span>
+    {{else if .HasToken}}
+      <span class="badge badge-success">Sincronizando</span>
+      <span class="muted">{{.PlantCount}} {{if eq .PlantCount 1}}usina{{else}}usinas{{end}} · {{.Stats.Pending}} pendentes · {{.Stats.Done}} concluídas{{if gt .Stats.Failed 0}} · {{.Stats.Failed}} com falha{{end}}</span>
+    {{else}}
+      <span class="badge badge-neutral">Sem token</span>
+      <span class="muted">A sincronização começa quando você adicionar o token.</span>
+    {{end}}
+  </div>
+
+  {{if .TokensAvailable}}
+  <form method="POST" action="/account/token">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <div class="form-group">
+      <label for="token">{{if .HasToken}}Substituir o token{{else}}Token{{end}}</label>
+      <input type="password" id="token" name="token" class="form-control" required maxlength="512" autocomplete="off">
+    </div>
+    <button type="submit" class="btn">{{if .HasToken}}Substituir token{{else}}Salvar e iniciar sincronização{{end}}</button>
+  </form>
+  <p class="muted small">O token é conferido na Growatt e guardado criptografado. Ele nunca é exibido de novo. A Growatt só aceita esta consulta a cada 5 minutos.</p>
+  {{else}}
+  <p class="muted">Este servidor não está configurado para receber tokens.</p>
+  {{end}}
+
+  {{if .HasToken}}
+  <form method="POST" action="/account/token/remove" class="account-actions">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <button type="submit" class="btn btn-secondary btn-sm">Remover token e parar a sincronização</button>
+  </form>
+  <p class="muted small">Os dados já coletados continuam na sua conta.</p>
+  {{end}}
+</div>
+
+<div class="card account-section">
+  <h2>O que esperar</h2>
+  <p class="muted">A coleta busca os últimos 7 dias e continua todos os dias. Os alertas de falha funcionam logo com esses dados. A geração esperada precisa de pelo menos 60 dias de leituras válidas.</p>
+</div>
+{{end}}

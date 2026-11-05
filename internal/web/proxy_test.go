@@ -6,14 +6,13 @@ import (
 	"net/url"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/luigiazoreng/solarguard/internal/web"
 )
 
 func loginFrom(t *testing.T, baseURL, forwardedFor, password string) int {
 	t.Helper()
-	form := url.Values{"password": {password}}.Encode()
+	form := url.Values{"email": {testEmail}, "password": {password}}.Encode()
 	req, err := http.NewRequest(http.MethodPost, baseURL+"/login", strings.NewReader(form))
 	if err != nil {
 		t.Fatal(err)
@@ -37,7 +36,7 @@ func loginFrom(t *testing.T, baseURL, forwardedFor, password string) int {
 // wrong passwords must not lock the owner out of the panel.
 func TestLoginLockoutIsPerClientBehindProxy(t *testing.T) {
 	st := newWebTestStore(t)
-	ts := startServer(t, st, "senha-certa", time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC))
+	ts := loginServer(t, st, "senha-certa")
 
 	for i := 0; i < 5; i++ {
 		if got := loginFrom(t, ts.URL, "203.0.113.1", "errada"); got != http.StatusUnauthorized {
@@ -56,7 +55,7 @@ func TestLoginLockoutIsPerClientBehindProxy(t *testing.T) {
 // Changing the earlier entries must not escape a lockout.
 func TestLoginLockoutCannotBeEscapedByForgingForwardedFor(t *testing.T) {
 	st := newWebTestStore(t)
-	ts := startServer(t, st, "senha-certa", time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC))
+	ts := loginServer(t, st, "senha-certa")
 
 	for i := 0; i < 5; i++ {
 		loginFrom(t, ts.URL, "203.0.113.1", "errada")

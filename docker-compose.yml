@@ -2,15 +2,10 @@ services:
   solarguard:
     build: .
     restart: unless-stopped
-    # O cadastro da fonte é idempotente. O nome precisa ser sempre o mesmo, para não
-    # criar um segundo coletor com o mesmo token.
-    command:
-      - sh
-      - -c
-      - solarguard source-add --name growatt-principal --token-env GROWATT_TOKEN && exec solarguard serve
     environment:
-      GROWATT_TOKEN: ${GROWATT_TOKEN:?defina GROWATT_TOKEN}
-      SOLARGUARD_ADMIN_PASSWORD: ${SOLARGUARD_ADMIN_PASSWORD:?defina SOLARGUARD_ADMIN_PASSWORD}
+      # Criptografa os tokens salvos pelas contas. Se ela mudar, cada conta precisa
+      # informar o token de novo.
+      SOLARGUARD_SECRET_KEY: ${SOLARGUARD_SECRET_KEY:?defina SOLARGUARD_SECRET_KEY}
       SOLARGUARD_MCP_TOKEN: ${SOLARGUARD_MCP_TOKEN:-}
       # A porta só é alcançável pelo proxy reverso. Não publique com "ports".
       SOLARGUARD_TRUST_PROXY: "true"

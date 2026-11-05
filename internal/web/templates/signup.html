@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Criar conta - SolarGuard</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="login-page">
+  <div class="login-card card">
+    <h2 class="login-title">Criar conta</h2>
+    <p class="muted text-center">Cada conta vê apenas as próprias usinas</p>
+
+    {{if .Error}}
+    <div class="message message-error">{{.Error}}</div>
+    {{end}}
+
+    <form method="POST" action="/signup">
+      <div class="form-group">
+        <label for="email">E-mail</label>
+        <input type="email" id="email" name="email" class="form-control" value="{{.Email}}" required autofocus autocomplete="username">
+      </div>
+      <div class="form-group">
+        <label for="password">Senha, com pelo menos {{.MinPassword}} caracteres</label>
+        <input type="password" id="password" name="password" class="form-control" required minlength="{{.MinPassword}}" autocomplete="new-password">
+      </div>
+      <div class="form-group">
+        <label for="confirm">Confirme a senha</label>
+        <input type="password" id="confirm" name="confirm" class="form-control" required autocomplete="new-password">
+      </div>
+      <button type="submit" class="login-submit btn">Criar conta</button>
+    </form>
+    <p class="login-alt">Já tem conta? <a href="/login">Entrar</a></p>
+  </div>
+</body>
+</html>

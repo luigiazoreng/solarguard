@@ -1,7 +1,7 @@
 {{define "content"}}
 <div class="section">
   <h1>Gestão</h1>
-  <p class="muted">Cadastro de usinas, fontes, sincronização e regras de alerta.</p>
+  <p class="muted">Usinas, dispositivos, sincronização e regras de alerta. O token da Growatt fica em <a href="/account">Conta</a>.</p>
 </div>
 
 {{if .SuccessMessage}}
@@ -96,8 +96,7 @@
         <tr>
           <th>Fonte</th>
           <th>Tipo</th>
-          <th>Variável de credencial</th>
-          <th>Status da credencial</th>
+          <th>Token</th>
           <th class="num">Pendentes</th>
           <th class="num">Concluídas</th>
           <th class="num">Falhas</th>
@@ -110,19 +109,12 @@
           <td class="strong">{{.Source.Name}}</td>
           <td><code>{{.Source.Kind}}</code></td>
           <td>
-            {{if or (eq .Source.Kind "file") (eq .Source.Kind "planilha") (eq .Source.CredentialEnv "")}}
-              <span class="muted">-</span>
-            {{else}}
-              <code>{{.Source.CredentialEnv}}</code>
-            {{end}}
-          </td>
-          <td>
-            {{if or (eq .Source.Kind "file") (eq .Source.Kind "planilha") (eq .Source.CredentialEnv "")}}
+            {{if not .NeedsCredential}}
               <span class="badge badge-neutral">Não se aplica</span>
-            {{else if .IsEnvConfigured}}
-              <span class="badge badge-success">Configurada</span>
+            {{else if .HasCredential}}
+              <span class="badge badge-success">Configurado</span>
             {{else}}
-              <span class="badge badge-critical">Não configurada</span>
+              <a href="/account"><span class="badge badge-critical">Não configurado</span></a>
             {{end}}
           </td>
           <td class="num">{{.Stats.Pending}}</td>

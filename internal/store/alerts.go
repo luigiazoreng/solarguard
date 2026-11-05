@@ -28,6 +28,7 @@ type Alert struct {
 
 // AlertFilter defines criteria for filtering alerts in ListAlerts.
 type AlertFilter struct {
+	UserID   *int64 // only alerts of this account's plants
 	PlantID  *int64
 	DeviceID *int64
 	Status   string
@@ -54,6 +55,10 @@ func (s *Store) ListAlerts(ctx context.Context, f AlertFilter) ([]Alert, error) 
 		FROM alerts WHERE 1=1`
 	var args []any
 
+	if f.UserID != nil {
+		q += " AND plant_id IN " + ownedPlantIDs
+		args = append(args, *f.UserID)
+	}
 	if f.PlantID != nil {
 		q += " AND plant_id = ?"
 		args = append(args, *f.PlantID)

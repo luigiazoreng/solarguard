@@ -41,56 +41,67 @@ func (s *Store) SetNow(now func() time.Time) {
 	s.now = now
 }
 
-// GetSourceByName returns a source by its unique name or ErrNotFound.
-func (s *Store) GetSourceByName(ctx context.Context, name string) (domain.Source, error) {
+// sourceColumns lists the columns read by scanSource, in order.
+const sourceColumns = `id, kind, name, config_json, credential_env, enabled, user_id, credential_enc`
+
+func scanSource(scan func(dest ...any) error) (domain.Source, error) {
 	var out domain.Source
 	var enabled int
-	err := s.db.QueryRowContext(ctx, `SELECT id, kind, name, config_json, credential_env, enabled FROM sources WHERE name = ?`, name).
-		Scan(&out.ID, &out.Kind, &out.Name, &out.ConfigJSON, &out.CredentialEnv, &enabled)
+	var userID sql.NullInt64
+	if err := scan(&out.ID, &out.Kind, &out.Name, &out.ConfigJSON, &out.CredentialEnv, &enabled, &userID, &out.CredentialEnc); err != nil {
+		return domain.Source{}, err
+	}
+	out.Enabled = enabled != 0
+	if userID.Valid {
+		out.UserID = &userID.Int64
+	}
+	return out, nil
+}
+
+func collectSources(rows *sql.Rows) ([]domain.Source, error) {
+	defer rows.Close()
+	var out []domain.Source
+	for rows.Next() {
+		src, err := scanSource(rows.Scan)
+		if err != nil {
+			return nil, fmt.Errorf("scan source: %w", err)
+		}
+		out = append(out, src)
+	}
+	return out, rows.Err()
+}
+
+// GetSourceByName returns a source by its unique name or ErrNotFound.
+func (s *Store) GetSourceByName(ctx context.Context, name string) (domain.Source, error) {
+	out, err := scanSource(s.db.QueryRowContext(ctx, `SELECT `+sourceColumns+` FROM sources WHERE name = ?`, name).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.Source{}, ErrNotFound
 	}
 	if err != nil {
 		return domain.Source{}, fmt.Errorf("get source by name: %w", err)
 	}
-	out.Enabled = enabled != 0
 	return out, nil
 }
 
 // GetSource returns a source by ID or ErrNotFound.
 func (s *Store) GetSource(ctx context.Context, id int64) (domain.Source, error) {
-	var out domain.Source
-	var enabled int
-	err := s.db.QueryRowContext(ctx, `SELECT id, kind, name, config_json, credential_env, enabled FROM sources WHERE id = ?`, id).
-		Scan(&out.ID, &out.Kind, &out.Name, &out.ConfigJSON, &out.CredentialEnv, &enabled)
+	out, err := scanSource(s.db.QueryRowContext(ctx, `SELECT `+sourceColumns+` FROM sources WHERE id = ?`, id).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.Source{}, ErrNotFound
 	}
 	if err != nil {
 		return domain.Source{}, fmt.Errorf("get source: %w", err)
 	}
-	out.Enabled = enabled != 0
 	return out, nil
 }
 
-// ListSources returns all sources ordered by ID.
+// ListSources returns every source, oldest first.
 func (s *Store) ListSources(ctx context.Context) ([]domain.Source, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, kind, name, config_json, credential_env, enabled FROM sources ORDER BY id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+sourceColumns+` FROM sources ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("list sources: %w", err)
 	}
-	defer rows.Close()
-	var out []domain.Source
-	for rows.Next() {
-		var src domain.Source
-		var enabled int
-		if err := rows.Scan(&src.ID, &src.Kind, &src.Name, &src.ConfigJSON, &src.CredentialEnv, &enabled); err != nil {
-			return nil, fmt.Errorf("scan source: %w", err)
-		}
-		src.Enabled = enabled != 0
-		out = append(out, src)
-	}
-	return out, rows.Err()
+	return collectSources(rows)
 }
 
 // ListPlantsBySource returns all plants for a source ordered by name, id.

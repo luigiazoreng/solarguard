@@ -47,9 +47,8 @@ header.navbar {
 .nav-links { display: flex; flex-wrap: wrap; align-items: center; gap: 18px; list-style: none; margin: 0; padding: 0; }
 .nav-links a { color: #d6e9e1; padding: 5px 0; }
 .nav-links a.active { color: #fff; border-bottom: 2px solid #fff; }
-.navbar .btn-secondary { color: #fff; border-color: #628c7d; }
+.navbar .btn-secondary { background: transparent; color: #fff; border-color: #628c7d; }
 .navbar .btn-secondary:hover { background: #16634b; }
-.banner-loopback { padding: 3px 16px; font-size: 12px; color: var(--text-muted); border-bottom: 1px solid var(--border); }
 main.container { max-width: 1440px; margin: auto; padding: 20px; min-width: 0; }
 .section, .page-heading { margin-bottom: 20px; }
 .page-heading, .split { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px; align-items: flex-start; }
@@ -145,6 +144,11 @@ blockquote { margin: 12px 0; padding: 8px 16px; border-left: 3px solid var(--bor
 .login-card { width: 100%; max-width: 380px; padding: 28px 24px; border-top: 4px solid #0a4937; }
 .login-title { font-size: 25px; text-align: center; color: #0a4937; }
 .login-submit { width: 100%; margin-top: 8px; }
+.login-alt { margin-top: 16px; text-align: center; font-size: 13px; }
+.account-section { max-width: 640px; margin-bottom: 24px; }
+.account-status { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+.account-actions { margin-top: 16px; }
+.account-section .small { margin-top: 8px; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .flush { margin: 0; }
 @media (max-width: 900px) {

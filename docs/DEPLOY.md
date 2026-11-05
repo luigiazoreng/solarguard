@@ -2,30 +2,32 @@
 
 O [docker-compose.yml](../docker-compose.yml) sobe um único container com o painel, a coleta e o MCP. O banco é um arquivo SQLite no volume `solarguard-data`, então não há container de banco. Ele sobrevive a novos deploys.
 
-Mantenha **um único coletor por fonte**: antes de ligar a VPS, pare qualquer `serve` ou `collect` que use o mesmo token em outra máquina.
-
 ## Subir
 
 1. No Dokploy, crie um serviço do tipo **Compose** apontando para este repositório, com o caminho `./docker-compose.yml`.
-2. Na aba **Environment**, defina:
+2. Na aba **Environment**, defina a chave que criptografa os tokens das contas:
 
    ```text
-   GROWATT_TOKEN=
-   SOLARGUARD_ADMIN_PASSWORD=
+   SOLARGUARD_SECRET_KEY=
    ```
 
-   Gere a senha com `openssl rand -base64 24` e guarde-a em um gerenciador de senhas. Para ligar o MCP pela rede, acrescente `SOLARGUARD_MCP_TOKEN` com outro valor aleatório. Sem ele, a rota `/mcp` responde 404.
+   Gere com `openssl rand -base64 32` e guarde uma cópia fora da VPS. Se ela se perder, os dados continuam, mas cada conta precisa informar o token de novo.
 3. Crie um registro `A` no DNS apontando o domínio para a VPS.
 4. Na aba **Domains**, adicione o domínio com o serviço `solarguard`, a porta `8080` e o HTTPS ligado com Let's Encrypt.
 5. Faça o deploy.
+6. Abra o domínio, crie uma conta e, em **Conta**, informe o token da Growatt. A coleta começa na hora, sem reiniciar nada.
 
 Não publique a porta com `ports`. A variável `SOLARGUARD_TRUST_PROXY` faz o painel aceitar o endereço do cliente informado pelo proxy, então só o proxy pode alcançar a porta. Sem isso, alguém poderia fugir do bloqueio de senha.
 
-A coleta começa sozinha, mas uma instalação nova só tem os últimos 7 dias. Sem histórico não há geração esperada, porque cada modelo precisa de pelo menos 60 dias de leituras válidas.
+O cadastro é aberto a quem acessar o domínio. Cada conta vê só as próprias usinas, mas consome recursos da VPS.
+
+Mantenha **um único coletor por token**: pare qualquer `serve` ou `collect` que use o mesmo token em outra máquina.
+
+Uma instalação nova só coleta os últimos 7 dias. Sem histórico não há geração esperada, porque cada modelo precisa de pelo menos 60 dias de leituras válidas.
 
 ## Levar um banco existente
 
-Faça isto logo depois do primeiro deploy. O procedimento **substitui** o banco do volume.
+Faça isto logo depois do primeiro deploy, antes de criar contas. O procedimento **substitui** o banco do volume.
 
 Na máquina de origem, com o coletor parado:
 
@@ -55,17 +57,33 @@ docker run --rm -v NOME_DO_VOLUME:/data -v /tmp/solarguard-envio.db:/in.db:ro al
 rm /tmp/solarguard-envio.db
 ```
 
-O compose usa a fonte `growatt-principal`. Se o banco tiver outro nome de fonte, troque-o no `command` do compose antes do deploy, ou serão dois coletores com o mesmo token.
+As usinas do banco importado ficam sem dono, e nenhuma conta as vê até comprovar acesso a elas. Quando alguém salva em **Conta** um token que lista essas usinas, a conta recebe as usinas e todo o histórico.
+
+Uma planilha importada não tem token. Entregue a fonte a uma conta pelo terminal do container:
+
+```bash
+solarguard source-assign --source NOME_DA_FONTE --email pessoa@exemplo.com
+```
 
 ## Rodar comandos
 
-Pelo terminal do container no Dokploy, por exemplo para buscar o histórico de uma planta. Os IDs aparecem no endereço da página da planta:
+Pelo terminal do container no Dokploy. Para buscar o histórico de uma planta, use o nome da fonte mostrado em **Gestão** e o ID que aparece no endereço da página da planta:
 
 ```bash
-solarguard backfill --source growatt-principal --plant-id 1 --from 2026-01-01 --to 2026-10-31
+solarguard backfill --source NOME_DA_FONTE --plant-id 1 --from 2026-01-01 --to 2026-10-31
 ```
 
 Reinicie o serviço depois: o `serve` processa a fila, e a coleta é lenta de propósito por causa dos limites da API.
+
+Não há recuperação de senha por e-mail. Para trocar a senha de uma conta, rode o comando abaixo e digite a nova senha:
+
+```bash
+solarguard user-reset-password --email pessoa@exemplo.com
+```
+
+## Acesso por IA (MCP)
+
+`SOLARGUARD_MCP_TOKEN` liga a rota `/mcp`, e sem ele a rota responde 404. Esse token é de quem administra o servidor: ele lê os dados de **todas** as contas. Não o entregue a quem só tem uma conta no painel.
 
 ## Backup
 
@@ -79,6 +97,8 @@ Sem S3, gere uma cópia no terminal do container e baixe o arquivo:
 sqlite3 /data/solarguard.db ".backup /data/backup.db"
 ```
 
+Os tokens no backup estão criptografados. Guarde a `SOLARGUARD_SECRET_KEY` separada dele.
+
 ## Atualizar
 
-Faça um novo deploy. As migrações do banco rodam ao iniciar. Faça um backup antes: uma migração aplicada não é desfeita ao voltar para a versão anterior.
+Faça um novo deploy. As migrações do banco rodam ao iniciar. Faça um backup antes: uma migração aplicada não é desfeita ao voltar para a versão anterior. As sessões ficam em memória, então cada deploy pede login de novo.

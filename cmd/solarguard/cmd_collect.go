@@ -42,7 +42,7 @@ func runDiscover(ctx context.Context, args []string) error {
 		return fmt.Errorf("buscar fonte %q: %w", sourceName, err)
 	}
 
-	conn, err := ingest.ResolveSourceConnector(src)
+	conn, err := ingest.ResolveSourceConnector(src, optionalBox())
 	if err != nil {
 		return err
 	}
@@ -82,7 +82,7 @@ func runBackfill(ctx context.Context, args []string) error {
 		return fmt.Errorf("buscar fonte %q: %w", sourceName, err)
 	}
 
-	conn, err := ingest.ResolveSourceConnector(src)
+	conn, err := ingest.ResolveSourceConnector(src, optionalBox())
 	if err != nil {
 		return err
 	}
@@ -117,7 +117,7 @@ func runCollect(ctx context.Context, args []string) error {
 		return fmt.Errorf("buscar fonte %q: %w", sourceName, err)
 	}
 
-	conn, err := ingest.ResolveSourceConnector(src)
+	conn, err := ingest.ResolveSourceConnector(src, optionalBox())
 	if err != nil {
 		return err
 	}

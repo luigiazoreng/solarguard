@@ -25,6 +25,7 @@ type Report struct {
 
 // ReportFilter selects reports. Zero values match everything.
 type ReportFilter struct {
+	UserID  *int64 // only reports of this account's plants
 	PlantID *int64
 	Status  string
 	Author  string
@@ -84,6 +85,10 @@ func (s *Store) GetReport(ctx context.Context, id int64) (Report, error) {
 func (s *Store) ListReports(ctx context.Context, f ReportFilter) ([]Report, error) {
 	q := `SELECT ` + reportColumns + ` FROM reports WHERE 1=1`
 	var args []any
+	if f.UserID != nil {
+		q += " AND plant_id IN " + ownedPlantIDs
+		args = append(args, *f.UserID)
+	}
 	if f.PlantID != nil {
 		q += " AND plant_id = ?"
 		args = append(args, *f.PlantID)

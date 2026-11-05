@@ -165,6 +165,13 @@ func Backfill(ctx context.Context, st *store.Store, sourceID int64, conn connect
 type SchedulerOption func(*Scheduler)
 
 // WithSchedulerNow sets the time provider for Scheduler.
+// WithSchedulerPoll sets how often a waiting scheduler checks whether discovery ended.
+func WithSchedulerPoll(poll time.Duration) SchedulerOption {
+	return func(s *Scheduler) {
+		s.poll = poll
+	}
+}
+
 func WithSchedulerNow(now func() time.Time) SchedulerOption {
 	return func(s *Scheduler) {
 		s.now = now
@@ -185,6 +192,7 @@ type Scheduler struct {
 	conn     connector.Connector
 	now      func() time.Time
 	logger   *log.Logger
+	poll     time.Duration
 }
 
 // NewScheduler creates a new Scheduler for a source.
@@ -194,6 +202,7 @@ func NewScheduler(st *store.Store, sourceID int64, conn connector.Connector, opt
 		sourceID: sourceID,
 		conn:     conn,
 		now:      time.Now,
+		poll:     time.Minute,
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -238,25 +247,48 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 
 // Run executes Tick periodically every 15 minutes until ctx is cancelled.
 func (s *Scheduler) Run(ctx context.Context) error {
-	if err := s.Tick(ctx); err != nil && !errors.Is(err, context.Canceled) {
-		if s.logger != nil {
-			s.logger.Printf("scheduler tick error for source %d: %v", s.sourceID, err)
-		}
-	}
+	s.tick(ctx)
 
 	ticker := time.NewTicker(15 * time.Minute)
 	defer ticker.Stop()
+	poll := time.NewTicker(s.poll)
+	defer poll.Stop()
+
+	// A tick skips the days while discovery is pending. Without this, a new source
+	// would wait for the next tick to collect its first reading.
+	waitingDiscovery := true
 
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			if err := s.Tick(ctx); err != nil && !errors.Is(err, context.Canceled) {
-				if s.logger != nil {
-					s.logger.Printf("scheduler tick error for source %d: %v", s.sourceID, err)
-				}
+			s.tick(ctx)
+			waitingDiscovery = true
+		case <-poll.C:
+			if !waitingDiscovery {
+				continue
+			}
+			pending, err := s.st.HasPendingDiscoveryTasks(ctx, s.sourceID)
+			if err != nil || pending {
+				continue
+			}
+			waitingDiscovery = false
+			if err := ScheduleCompletedDays(ctx, s.st, s.sourceID, s.conn, s.now); err != nil {
+				s.logError(err)
 			}
 		}
+	}
+}
+
+func (s *Scheduler) tick(ctx context.Context) {
+	if err := s.Tick(ctx); err != nil {
+		s.logError(err)
+	}
+}
+
+func (s *Scheduler) logError(err error) {
+	if s.logger != nil && !errors.Is(err, context.Canceled) {
+		s.logger.Printf("scheduler tick error for source %d: %v", s.sourceID, err)
 	}
 }

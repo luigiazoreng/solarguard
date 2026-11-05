@@ -24,14 +24,15 @@ type PlantOverviewRow struct {
 
 func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	plants, err := s.store.ListPlants(ctx)
+	userID := sessionUserID(r)
+	plants, err := s.store.ListPlantsForUser(ctx, userID)
 	if err != nil {
 		s.cfg.Logger.Error("list plants", "err", err)
 		http.Error(w, "Erro ao listar usinas", http.StatusInternalServerError)
 		return
 	}
 
-	alerts, err := s.store.ListAlerts(ctx, store.AlertFilter{Status: "open"})
+	alerts, err := s.store.ListAlerts(ctx, store.AlertFilter{UserID: &userID, Status: "open"})
 	if err != nil {
 		s.cfg.Logger.Error("list alerts", "err", err)
 		http.Error(w, "Erro ao listar alertas", http.StatusInternalServerError)

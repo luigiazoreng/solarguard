@@ -12,10 +12,6 @@
   <script src="/static/app.js"></script>
 </head>
 <body hx-headers='{"HX-CSRF-Token": "{{.CSRFToken}}"}'>
-  {{if .ShowLoopbackBanner}}
-  <div class="banner-loopback">sem senha: acesso apenas local</div>
-  {{end}}
-
   <header class="navbar">
     <a href="/" class="nav-brand">SolarGuard<small>Monitoramento solar</small></a>
     <nav>
@@ -24,14 +20,13 @@
         <li><a href="/alerts" {{if eq .ActiveNav "alerts"}}class="active"{{end}}>Alertas</a></li>
         <li><a href="/reports" {{if eq .ActiveNav "reports"}}class="active"{{end}}>Relatórios</a></li>
         <li><a href="/manage" {{if eq .ActiveNav "manage"}}class="active"{{end}}>Gestão</a></li>
-        {{if not .NoAuth}}
+        <li><a href="/account" {{if eq .ActiveNav "account"}}class="active"{{end}}>Conta</a></li>
         <li>
           <form action="/logout" method="POST" class="inline-form">
             <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
             <button type="submit" class="btn btn-secondary btn-sm">Sair</button>
           </form>
         </li>
-        {{end}}
       </ul>
     </nav>
   </header>
